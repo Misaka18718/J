@@ -14,8 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.automirrored.filled.Redo
-import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.Redo
+import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -46,6 +46,8 @@ fun IDEScreen(vm: IDEViewModel) {
     val treeOpen by vm.treeOpen
     val running by vm.isRunning
     val snippetQuery by vm.snippetQuery
+    val canUndo by vm.canUndo
+    val canRedo by vm.canRedo
     val editorRef = remember { mutableStateOf<CodeEditor?>(null) }
 
     var showNewFile by remember { mutableStateOf(false) }
@@ -65,15 +67,15 @@ fun IDEScreen(vm: IDEViewModel) {
                 actions = {
                     IconButton(
                         onClick = { editorRef.value?.text?.undo() },
-                        enabled = vm.canUndo.value
+                        enabled = canUndo
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "撤销")
+                        Icon(Icons.Filled.Undo, contentDescription = "撤销")
                     }
                     IconButton(
                         onClick = { editorRef.value?.text?.redo() },
-                        enabled = vm.canRedo.value
+                        enabled = canRedo
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "重做")
+                        Icon(Icons.Filled.Redo, contentDescription = "重做")
                     }
                     IconButton(
                         onClick = {
@@ -104,6 +106,13 @@ fun IDEScreen(vm: IDEViewModel) {
                             DropdownMenuItem(
                                 text = { Text("创建 out") },
                                 onClick = { menuOpen = false; vm.createOut() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("保存") },
+                                onClick = {
+                                    menuOpen = false
+                                    vm.saveContent(editorRef.value?.text?.toString() ?: "")
+                                }
                             )
                             DropdownMenuItem(
                                 text = { Text("清空控制台") },

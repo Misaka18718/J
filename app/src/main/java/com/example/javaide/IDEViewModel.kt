@@ -28,18 +28,17 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     val consoleExpanded = androidx.compose.runtime.mutableStateOf(true)
     val treeOpen = androidx.compose.runtime.mutableStateOf(true)
     val snippetQuery = androidx.compose.runtime.mutableStateOf("")
-    /** 撤销 / 重做是否可用（由编辑器文本变化事件同步）。 */
-    val canUndo = androidx.compose.runtime.mutableStateOf(false)
-    val canRedo = androidx.compose.runtime.mutableStateOf(false)
     val programConsole =
         androidx.compose.runtime.mutableStateOf<JavaProgramConsole?>(null)
     val expandedDirs =
         androidx.compose.runtime.mutableStateOf<Set<String>>(emptySet())
 
+    /** 撤销 / 重做可用状态（由编辑器内容变化事件更新）。 */
+    val canUndo = androidx.compose.runtime.mutableStateOf(false)
+    val canRedo = androidx.compose.runtime.mutableStateOf(false)
+
     /** 程序化改写编辑器文本时的防递归开关（非 Compose 状态）。 */
     var applyingSnippet = false
-    /** 加载/切换文件时的标记：避免把文件内容当成用户输入去触发片段提示。 */
-    var loadingFile = false
 
     // ---------- 控制台输出 ----------
     private val _console = MutableStateFlow("")
@@ -114,40 +113,38 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         appendConsole("已打开 $fileName\n")
     }
 
-    /** 重命名文件（仅改文件名与路径，不改动内容里的类名/包声明）。 */
+    /** 重命名文件或目录（保持在同一父目录下）。 */
     fun renameFile(file: File, newName: String) {
-        val name = if (newName.endsWith(".java")) newName else "$newName.java"
-        val target = File(file.parentFile, name)
-        if (!file.exists()) {
-            appendConsole(">>> 文件不存在\n")
-            return
-        }
+        val name = newName.trim()
+        if (name.isEmpty()) return
+        val parent = file.parentFile ?: return
+        val target = File(parent, name)
         if (target.exists()) {
-            appendConsole(">>> 已存在同名文件：$name\n")
+            appendConsole("重命名失败：名称已存在\n")
             return
         }
         if (file.renameTo(target)) {
             if (currentFile.value == file) currentFile.value = target
             refreshTree()
-            appendConsole(">>> 已重命名为 $name\n")
+            appendConsole("已重命名 -> $name\n")
         } else {
-            appendConsole(">>> 重命名失败\n")
+            appendConsole("重命名失败\n")
         }
     }
 
-    /** 删除文件或目录（目录会递归删除，确认对话框里会提示）。 */
+    /** 删除文件或目录（目录递归删除）。 */
     fun deleteFile(file: File) {
-        if (!file.exists()) {
-            appendConsole(">>> 文件不存在\n")
-            return
-        }
         val ok = if (file.isDirectory) file.deleteRecursively() else file.delete()
         if (ok) {
-            if (currentFile.value == file) currentFile.value = null
+            val cur = currentFile.value
+            if (cur != null && (cur == file || cur.path.startsWith(file.path + File.separator))) {
+                currentFile.value = null
+                applySnippet = false
+            }
             refreshTree()
-            appendConsole(">>> 已删除 ${file.name}\n")
+            appendConsole("已删除：${file.name}\n")
         } else {
-            appendConsole(">>> 删除失败\n")
+            appendConsole("删除失败\n")
         }
     }
 

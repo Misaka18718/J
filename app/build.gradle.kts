@@ -13,8 +13,8 @@ android {
         // compiler-d8（ECJ + D8 安卓端 Java 编译引擎）的 manifest 要求 minSdk >= 24
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {
@@ -42,8 +42,7 @@ android {
         // 高于本编译器，跳过版本检查以避免 K2 在检查该不兼容类时崩溃。
         freeCompilerArgs += listOf(
             "-Xskip-metadata-version-check",
-            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
-            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
         )
     }
 

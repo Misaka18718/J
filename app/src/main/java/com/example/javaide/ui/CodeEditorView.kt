@@ -36,26 +36,20 @@ fun CodeEditorView(
                 typefaceText = Typeface.MONOSPACE
                 setEditorLanguage(JavaLanguage())
 
-                // 初始加载当前文件（不记录到撤销栈，作为基线）
+                // 初始加载当前文件
                 vm.currentFile.value?.let { f: File ->
-                    if (f.exists()) {
-                        vm.loadingFile = true
-                        text.setUndoEnabled(false)
-                        setText(f.readText())
-                        text.setUndoEnabled(true)
-                        vm.loadingFile = false
-                    }
+                    if (f.exists()) setText(f.readText())
                 }
 
                 // 监听文本变化，解析光标前的“词”作为片段查询
                 subscribeAlways(ContentChangeEvent::class.java) {
-                    vm.canUndo.value = text.canUndo()
-                    vm.canRedo.value = text.canRedo()
-                    if (!vm.applyingSnippet && !vm.loadingFile) {
+                    if (!vm.applyingSnippet) {
                         val idx = SnippetEngine.caretIndex(this)
                         val token = SnippetEngine.currentToken(text.toString(), idx)
                         vm.setSnippetQuery(token)
                     }
+                    vm.canUndo.value = this.text.canUndo()
+                    vm.canRedo.value = this.text.canRedo()
                 }
 
                 editorRef.value = this
@@ -63,16 +57,11 @@ fun CodeEditorView(
         }
     )
 
-    // 切换文件时加载新内容（不记录到撤销栈，作为基线）；文件不存在则清空编辑器
+    // 切换文件时加载新内容
     val file = vm.currentFile.value
     LaunchedEffect(file?.absolutePath) {
-        val editor = editorRef.value ?: return@LaunchedEffect
-        vm.loadingFile = true
-        editor.text.setUndoEnabled(false)
-        if (file != null && file.exists()) editor.setText(file.readText())
-        else editor.setText("")
-        editor.text.setUndoEnabled(true)
-        vm.loadingFile = false
-        vm.setSnippetQuery("")
+        file?.let { f: File ->
+            if (f.exists()) editorRef.value?.setText(f.readText())
+        }
     }
 }
