@@ -438,8 +438,10 @@ fun IDEScreen(vm: IDEViewModel) {
 private fun TabBar(vm: IDEViewModel) {
     val openTabs = vm.openTabs.value
     val activeTab = vm.activeTab.value
-    // 待关闭且需确认保存的标签页索引（为 null 表示不弹窗）
+    // 待关闭 / 待切换且需确认保存的标签页索引（为 null 表示不弹窗）
     var pendingClose by remember { mutableStateOf<Int?>(null) }
+    var pendingSwitch by remember { mutableStateOf<Int?>(null) }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -451,7 +453,14 @@ private fun TabBar(vm: IDEViewModel) {
             val selected = i == activeTab
             Row(
                 modifier = Modifier
-                    .clickable { vm.setActiveTab(i) }
+                    .clickable {
+                        // 切换到另一个已脏的标签页时，先确认保存
+                        if (i != activeTab && vm.isTabDirty(activeTab)) {
+                            pendingSwitch = i
+                        } else {
+                            vm.setActiveTab(i)
+                        }
+                    }
                     .background(
                         if (selected) MaterialTheme.colorScheme.primaryContainer
                         else Color.Transparent
@@ -479,7 +488,7 @@ private fun TabBar(vm: IDEViewModel) {
         }
     }
 
-    // 未保存退出的确认对话框：保存 / 不保存 / 取消
+    // 未保存退出（关闭）的确认对话框：保存 / 不保存 / 取消
     if (pendingClose != null) {
         val idx = pendingClose!!
         val name = openTabs.getOrNull(idx)?.name ?: ""
@@ -501,6 +510,33 @@ private fun TabBar(vm: IDEViewModel) {
                         pendingClose = null
                     }) { Text("不保存") }
                     TextButton(onClick = { pendingClose = null }) { Text("取消") }
+                }
+            }
+        )
+    }
+
+    // 未保存退出（切换到其它标签）的确认对话框：保存 / 不保存 / 取消
+    if (pendingSwitch != null) {
+        val target = pendingSwitch!!
+        val name = openTabs.getOrNull(activeTab)?.name ?: ""
+        AlertDialog(
+            onDismissRequest = { pendingSwitch = null },
+            title = { Text("未保存的修改") },
+            text = { Text("“$name” 含有未保存的修改，是否保存后再切换？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.saveTab(activeTab)
+                    vm.setActiveTab(target)
+                    pendingSwitch = null
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        vm.setActiveTab(target)
+                        pendingSwitch = null
+                    }) { Text("不保存") }
+                    TextButton(onClick = { pendingSwitch = null }) { Text("取消") }
                 }
             }
         )

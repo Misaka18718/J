@@ -154,6 +154,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     fun updateActiveContent(text: String) {
         val f = openTabs.value.getOrNull(activeTab.value) ?: return
         tabContent[f] = text
+        // 只要内容与“上一次显式保存/打开时”不一致，就标记为脏（用于关闭/切换时的确认保存）。
+        // 注意：这里不再因自动保存而清除脏标记——否则“未保存退出确认”永远不会触发。
         tabDirty[f] = text != (tabSaved[f] ?: "")
         // 自动保存：最后一次改动后延迟落盘，避免每次按键都写磁盘
         if (autoSave.value) {
@@ -164,7 +166,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 if (!file.exists()) file.parentFile?.mkdirs()
                 file.writeText(text)
                 tabSaved[file] = text
-                tabDirty[file] = false
+                // 仅更新磁盘基线，不清空 tabDirty：确认保存对话框仍应由用户显式保存触发
             }
         }
     }
