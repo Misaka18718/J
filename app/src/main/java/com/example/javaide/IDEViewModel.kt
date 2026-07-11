@@ -39,8 +39,13 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     private fun privateDir(): File =
         (context.getExternalFilesDir(null) ?: context.filesDir).resolve("JavaIDEProject")
 
+    /** 公共存储文件夹名（可自定义，存于 SharedPreferences）。 */
+    val publicStoragePath = androidx.compose.runtime.mutableStateOf(
+        prefs.getString("publicStoragePath", "JavaIDE_Workspace") ?: "JavaIDE_Workspace"
+    )
+
     private fun publicDir(): File =
-        File(Environment.getExternalStorageDirectory(), "JavaIDE_Workspace")
+        File(Environment.getExternalStorageDirectory(), publicStoragePath.value)
 
     /** 工程根目录（可切换私有/公共存储）。 */
     var projectDir: File = if ((prefs.getString("workingDirMode", "private")
@@ -501,6 +506,17 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     fun setShowLineNumbers(v: Boolean) {
         showLineNumbers.value = v
         prefs.edit().putBoolean("showLineNumbers", v).apply()
+    }
+
+    fun setPublicStoragePath(path: String) {
+        val trimmed = path.trim()
+        if (trimmed.isEmpty() || trimmed == publicStoragePath.value) return
+        publicStoragePath.value = trimmed
+        prefs.edit().putString("publicStoragePath", trimmed).apply()
+        // 如果当前已在公共存储模式，自动迁移到新路径
+        if (workingDirMode.value == "public") {
+            applyWorkingDir("public")
+        }
     }
 
     /** 供新建文件对话框使用的目标目录：优先 selectedDir，其次当前文件目录，最后 src。 */

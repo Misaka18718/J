@@ -453,6 +453,8 @@ private fun TabBar(vm: IDEViewModel) {
     // 待关闭 / 待切换且需确认保存的标签页索引（为 null 表示不弹窗）
     var pendingClose by remember { mutableStateOf<Int?>(null) }
     var pendingSwitch by remember { mutableStateOf<Int?>(null) }
+    // 确认退出的第二层对话框（晚于保存提示；无论是否修改都弹）
+    var pendingExit by remember { mutableStateOf<Int?>(null) }
 
     Row(
         modifier = Modifier
@@ -484,9 +486,9 @@ private fun TabBar(vm: IDEViewModel) {
                 Spacer(Modifier.width(4.dp))
                 IconButton(
                     onClick = {
-                        // 有未保存修改时先弹确认框，否则直接关闭
+                        // 不论是否修改，都先走保存确认（如有修改），再走退出确认
                         if (vm.isTabDirty(i)) pendingClose = i
-                        else vm.closeTab(i)
+                        else pendingExit = i
                     },
                     modifier = Modifier.size(20.dp)
                 ) {
@@ -511,18 +513,38 @@ private fun TabBar(vm: IDEViewModel) {
             confirmButton = {
                 TextButton(onClick = {
                     vm.saveTab(idx)
-                    vm.closeTab(idx, save = false)
                     pendingClose = null
+                    pendingExit = idx
                 }) { Text("保存") }
             },
             dismissButton = {
                 Row {
                     TextButton(onClick = {
-                        vm.closeTab(idx, save = false)
                         pendingClose = null
+                        pendingExit = idx
                     }) { Text("不保存") }
                     TextButton(onClick = { pendingClose = null }) { Text("取消") }
                 }
+            }
+        )
+    }
+
+    // 确认退出的对话框：晚于"是否保存"，不论修改与否都弹出
+    if (pendingExit != null) {
+        val idx = pendingExit!!
+        val name = openTabs.getOrNull(idx)?.name ?: ""
+        AlertDialog(
+            onDismissRequest = { pendingExit = null },
+            title = { Text("确认关闭") },
+            text = { Text("是否关闭文件“$name”？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.closeTab(idx, save = false)
+                    pendingExit = null
+                }) { Text("确认") }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingExit = null }) { Text("取消") }
             }
         )
     }
@@ -631,12 +653,33 @@ private fun SettingsScreen(
         // 工作目录
         SettingRow(
             "使用公共存储",
-            "写入 /storage/emulated/0/JavaIDE_Workspace/（需授权）",
+            "写入 /storage/emulated/0/ 下自定义文件夹（需授权）",
         ) {
             Switch(
                 checked = vm.workingDirMode.value == "public",
                 onCheckedChange = { onTogglePublic(it) }
             )
+        }
+        if (vm.workingDirMode.value == "public") {
+            var customPath by remember { mutableStateOf(vm.publicStoragePath.value) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedTextField(
+                    value = customPath,
+                    onValueChange = { customPath = it },
+                    label = { Text("文件夹名") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = { vm.setPublicStoragePath(customPath) },
+                    modifier = Modifier.padding(start = 8.dp)
+                ) { Text("应用") }
+            }
         }
         Text(
             "当前工作目录：${vm.projectDir.absolutePath}",

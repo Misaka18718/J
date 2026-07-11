@@ -49,7 +49,7 @@ import io.github.rosemoe.sora.widget.CodeEditor
  * 动画（需求一）：上滑展开、下滑收回，支持**拖拽式展开**——展开高度随手指连续变化，
  * 可停在半展开状态，也可合上（松手后保持当前进度，不进行强制吸附）。
  *
- * 始终位于键盘之上（imePadding）。`→` 插入 Tab，其余单字符直接插入；
+ * 始终位于键盘之上（imePadding）。`→` 插入 4 个空格（引擎层将其渲染为 `····` 圆点），
  * 括号行成对符号插入一对并把光标移到中间。
  */
 @Composable
@@ -67,7 +67,7 @@ fun SymbolBar(
 
     // 第 1 行（常驻符号）
     val row1 = listOf(
-        "→" to { ed: CodeEditor? -> insertSymbol(vm, ed, "\t") },
+        "→" to { ed: CodeEditor? -> insertSymbol(vm, ed, "    ") },
         "/" to { ed: CodeEditor? -> insertSymbol(vm, ed, "/") },
         "+" to { ed: CodeEditor? -> insertSymbol(vm, ed, "+") },
         "-" to { ed: CodeEditor? -> insertSymbol(vm, ed, "-") },
