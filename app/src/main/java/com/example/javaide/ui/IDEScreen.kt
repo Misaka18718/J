@@ -231,19 +231,22 @@ fun IDEScreen(vm: IDEViewModel) {
                 Box(Modifier.fillMaxWidth().weight(2f)) {
                     CodeEditorView(vm, editorRef, Modifier.fillMaxSize())
 
-                    val matches = Snippets.matches(snippetQuery)
-                    AnimatedVisibility(
-                        visible = matches.isNotEmpty(),
-                        enter = fadeIn() + scaleIn(),
-                        exit = fadeOut() + scaleOut()
-                    ) {
-                        SnippetPopup(
-                            snippets = matches,
-                            onPick = { insertSnippet(editorRef.value, it, vm) },
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(start = 8.dp, top = 8.dp)
-                        )
+                    // 用独立 Column 承载片段弹窗，使 AnimatedVisibility 只处于 ColumnScope，
+                    // 避免与外层 BoxScope 的扩展冲突
+                    Column(Modifier.fillMaxSize()) {
+                        val matches = Snippets.matches(snippetQuery)
+                        AnimatedVisibility(
+                            visible = matches.isNotEmpty(),
+                            enter = fadeIn() + scaleIn(),
+                            exit = fadeOut() + scaleOut()
+                        ) {
+                            SnippetPopup(
+                                snippets = matches,
+                                onPick = { insertSnippet(editorRef.value, it, vm) },
+                                modifier = Modifier
+                                    .padding(start = 8.dp, top = 8.dp)
+                            )
+                        }
                     }
                 }
             }
