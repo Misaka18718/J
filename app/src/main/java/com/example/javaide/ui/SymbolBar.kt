@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -37,14 +38,15 @@ import io.github.rosemoe.sora.widget.CodeEditor
 /**
  * 底部快捷符号输入栏（Java 编辑器专用）。
  *
- * 布局（从上到下，对应需求五）：
- *  - 第 1 行：常驻折叠行 `→ / + - * = <`（始终可见）；
- *  - 上滑展开后，在其下方依次出现：
- *  - 第 2 行：“快捷栏”标题（居中）；
- *  - 第 3 行：`> " ' ; | \ _`；
- *  - 第 4 行：`() [] {}`（向左对齐）。
+ * 布局（从上到下，对应需求一/二）：
+ *  - 第 1 行（常驻，始终可见）：`→ / + - * = <`（均匀分布）；
+ *  - 上滑展开后，在其**下方**依次出现：
+ *      - 第 2 行：“快捷栏”标题（居中）；
+ *      - 第 3 行：`> " ' ; | \ _`（均匀分布）；
+ *      - 第 4 行：`() [] {}`（**向左对齐**，紧贴左边缘，与第 1 行左边缘对齐）。
+ *  即展开顺序严格为 **1 → 2 → 3 → 4**。
  *
- * 动画（需求五）：上滑展开、下滑收回，支持**拖拽式展开**——展开高度随手指连续变化，
+ * 动画（需求一）：上滑展开、下滑收回，支持**拖拽式展开**——展开高度随手指连续变化，
  * 可停在半展开状态，也可合上（松手后保持当前进度，不进行强制吸附）。
  *
  * 始终位于键盘之上（imePadding）。`→` 插入 Tab，其余单字符直接插入；
@@ -63,8 +65,8 @@ fun SymbolBar(
     // 屏幕密度，用于把 px 高度换算成 dp（Modifier.height 接收 dp）
     val density = LocalDensity.current.density
 
-    // 折叠态常驻的那一行（第 1 行）
-    val baseSymbols = listOf(
+    // 第 1 行（常驻符号）
+    val row1 = listOf(
         "→" to { ed: CodeEditor? -> insertSymbol(vm, ed, "\t") },
         "/" to { ed: CodeEditor? -> insertSymbol(vm, ed, "/") },
         "+" to { ed: CodeEditor? -> insertSymbol(vm, ed, "+") },
@@ -73,7 +75,7 @@ fun SymbolBar(
         "=" to { ed: CodeEditor? -> insertSymbol(vm, ed, "=") },
         "<" to { ed: CodeEditor? -> insertSymbol(vm, ed, "<") },
     )
-    // 展开态第 3 行
+    // 第 3 行（展开态第二排符号）
     val row3 = listOf(
         ">" to { ed: CodeEditor? -> insertSymbol(vm, ed, ">") },
         "\"" to { ed: CodeEditor? -> insertSymbol(vm, ed, "\"") },
@@ -83,7 +85,7 @@ fun SymbolBar(
         "\\" to { ed: CodeEditor? -> insertSymbol(vm, ed, "\\") },
         "_" to { ed: CodeEditor? -> insertSymbol(vm, ed, "_") },
     )
-    // 展开态第 4 行（成对符号，光标移到中间）
+    // 第 4 行（成对符号，光标移到中间）—— 左对齐排列
     val row4 = listOf(
         "()" to { ed: CodeEditor? -> insertSymbol(vm, ed, "()", pair = true) },
         "[]" to { ed: CodeEditor? -> insertSymbol(vm, ed, "[]", pair = true) },
@@ -106,11 +108,12 @@ fun SymbolBar(
                 )
             }
     ) {
-        // 第 1 行：常驻 7 个符号
-        SymbolRow(editorRef = editorRef, symbols = baseSymbols)
+        // ===== 第 1 行：常驻 7 个符号（始终可见） =====
+        SymbolRow(editorRef = editorRef, symbols = row1, weight = true)
 
-        // 展开内容（第 2/3/4 行）：用固定高度的裁剪框承载，高度 = 进度 × 自然高度，
-        // 实现“从上到下依次显示”且可停在半展开状态。
+        // ===== 展开内容（第 2/3/4 行）=====
+        // 用固定高度的裁剪框承载，高度 = 进度 × 自然高度，实现“从上到下依次显示”
+        // 且可停在半展开状态。框内顺序固定为：标题 → 第3行 → 第4行。
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -136,17 +139,17 @@ fun SymbolBar(
                         .padding(vertical = 2.dp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-                // 第 3 行
-                SymbolRow(editorRef = editorRef, symbols = row3)
-                // 第 4 行：向左对齐
+                // 第 3 行（均匀分布）
+                SymbolRow(editorRef = editorRef, symbols = row3, weight = true)
+                // 第 4 行（左对齐，紧贴左边缘，与第 1 行左边缘对齐）
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 4.dp, vertical = 2.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.Start)
+                    horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.Start)
                 ) {
                     row4.forEach { (label, action) ->
-                        SymbolKey(label) { action(editorRef.value) }
+                        SymbolKey(label, weight = false) { action(editorRef.value) }
                     }
                 }
             }
@@ -154,11 +157,12 @@ fun SymbolBar(
     }
 }
 
-/** 横向排列的一行符号键，均分宽度（第 1、3 行使用）。 */
+/** 横向排列的一行符号键。weight=true 时均分宽度（第 1、3 行）；false 时按内容宽度（第 4 行左对齐）。 */
 @Composable
 private fun SymbolRow(
     editorRef: androidx.compose.runtime.MutableState<CodeEditor?>,
-    symbols: List<Pair<String, (CodeEditor?) -> Unit>>
+    symbols: List<Pair<String, (CodeEditor?) -> Unit>>,
+    weight: Boolean
 ) {
     Row(
         modifier = Modifier
@@ -167,19 +171,19 @@ private fun SymbolRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterHorizontally)
     ) {
         symbols.forEach { (label, action) ->
-            SymbolKey(label) { action(editorRef.value) }
+            SymbolKey(label, weight) { action(editorRef.value) }
         }
     }
 }
 
 /** 单个符号键：点击即触发插入。声明为 RowScope 扩展，使 weight 可用。 */
 @Composable
-private fun RowScope.SymbolKey(label: String, onClick: () -> Unit) {
+private fun RowScope.SymbolKey(label: String, weight: Boolean = true, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .weight(1f)
+            .then(if (weight) Modifier.weight(1f) else Modifier.wrapContentWidth())
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp),
+            .padding(vertical = 8.dp, horizontal = if (weight) 0.dp else 2.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(

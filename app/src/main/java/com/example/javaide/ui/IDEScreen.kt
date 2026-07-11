@@ -232,7 +232,10 @@ fun IDEScreen(vm: IDEViewModel) {
                 }
             }
 
-            Column(Modifier.fillMaxSize().weight(1f)) {
+            // 编辑器侧容器：文件树展开时，在其上覆盖一层透明点击区，
+            // 点击右侧（编辑区 / 空屏）即收起文件树（需求四，等效于点左上角三道杠）。
+            Box(Modifier.fillMaxSize().weight(1f)) {
+                Column(Modifier.fillMaxSize()) {
                 // 标签页栏：横向滚动，点击切换、× 关闭
                 AnimatedVisibility(
                     visible = vm.openTabs.value.isNotEmpty(),
@@ -279,6 +282,15 @@ fun IDEScreen(vm: IDEViewModel) {
                 }
                 // 底部快捷符号输入栏：随键盘上推、始终在键盘之上
                 SymbolBar(vm, editorRef)
+                }
+                // 第二种关闭文件树方式：点击右侧露出区域即收起（透明层，不遮挡视觉）
+                if (treeOpen) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .clickable { vm.toggleTree() }
+                    )
+                }
             }
         }
         }
