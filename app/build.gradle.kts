@@ -13,8 +13,8 @@ android {
         // compiler-d8（ECJ + D8 安卓端 Java 编译引擎）的 manifest 要求 minSdk >= 24
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        versionCode = 4
+        versionName = "2.0"
     }
 
     buildTypes {

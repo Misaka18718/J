@@ -1,23 +1,25 @@
 package com.example.javaide.ui
 
-import android.graphics.Typeface
+import android.content.Context
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import java.io.File
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.javaide.IDEViewModel
-import com.example.javaide.Snippet
 import com.example.javaide.SnippetEngine
 import io.github.rosemoe.sora.langs.java.JavaLanguage
-import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.schemes.SchemeDarcula
+import io.github.rosemoe.sora.widget.schemes.SchemeEclipse
 
 /**
  * 把 Sora 的 [CodeEditor] 通过 AndroidView 嵌入到 Compose 中，
- * 并接上：Java 语法高亮、等宽字体、片段提示词检测、按文件切换加载。
+ * 并接上：Java 语法高亮、等宽字体、片段提示词检测、按文件切换加载、
+ * 夜间模式配色、行号开关、字号（含双指缩放）设置。
  */
 @Composable
 fun CodeEditorView(
@@ -33,8 +35,43 @@ fun CodeEditorView(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
-                typefaceText = Typeface.MONOSPACE
+                typefaceText = android.graphics.Typeface.MONOSPACE
                 setEditorLanguage(JavaLanguage())
+
+                // 初始应用各项编辑器设置
+                applyEditorSettings(vm, ctx)
+
+                // 双指缩放调整字号（关闭 Sora 自带缩放，自行处理）
+                setScalable(false)
+                var scaling = false
+                val scaleDetector = ScaleGestureDetector(
+                    ctx,
+                    object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                        override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                            scaling = true
+                            return true
+                        }
+
+                        override fun onScaleEnd(detector: ScaleGestureDetector) {
+                            scaling = false
+                        }
+
+                        override fun onScale(detector: ScaleGestureDetector): Boolean {
+                            val dm = resources.displayMetrics
+                            val currentSp = textSizePx / dm.scaledDensity
+                            val newSp = (currentSp * detector.scaleFactor)
+                                .coerceIn(8f, 40f)
+                            setTextSize(newSp)
+                            vm.setEditorFontSize(newSp)
+                            return true
+                        }
+                    }
+                )
+                setOnTouchListener { _, event: MotionEvent ->
+                    scaleDetector.onTouchEvent(event)
+                    // 双指缩放进行中时消费事件，避免 Sora 同时滚动
+                    scaling
+                }
 
                 // 初始加载当前激活标签页内容
                 val initContent = vm.activeTabContent()
@@ -42,7 +79,7 @@ fun CodeEditorView(
                 else vm.activeTabFile()?.takeIf { it.exists() }?.let { setText(it.readText()) }
 
                 // 监听文本变化，解析光标前的“词”作为片段查询，并回写当前标签页
-                subscribeAlways(ContentChangeEvent::class.java) {
+                subscribeAlways(io.github.rosemoe.sora.event.ContentChangeEvent::class.java) {
                     vm.canUndo.value = this.text.canUndo()
                     vm.canRedo.value = this.text.canRedo()
                     if (vm.loadingFile) return@subscribeAlways
@@ -58,6 +95,18 @@ fun CodeEditorView(
         }
     )
 
+    // 跟随设置变化实时应用：字号 / 行号 / 配色（夜间模式）
+    LaunchedEffect(vm.editorFontSize.value) {
+        editorRef.value?.setTextSize(vm.editorFontSize.value)
+    }
+    LaunchedEffect(vm.showLineNumbers.value) {
+        editorRef.value?.setLineNumberEnabled(vm.showLineNumbers.value)
+    }
+    LaunchedEffect(vm.nightMode.value) {
+        editorRef.value?.colorScheme =
+            if (vm.nightMode.value) SchemeDarcula() else SchemeEclipse()
+    }
+
     // 切换标签页时加载对应内容（保留各标签内存文本，避免相互覆盖）
     val activePath = vm.openTabs.value.getOrNull(vm.activeTab.value)?.absolutePath
     LaunchedEffect(activePath) {
@@ -70,4 +119,11 @@ fun CodeEditorView(
         vm.loadingFile = false
         vm.setSnippetQuery("")
     }
+}
+
+/** 一次性把当前设置套用到编辑器实例（创建时调用）。 */
+private fun CodeEditor.applyEditorSettings(vm: IDEViewModel, ctx: Context) {
+    setTextSize(vm.editorFontSize.value)
+    setLineNumberEnabled(vm.showLineNumbers.value)
+    colorScheme = if (vm.nightMode.value) SchemeDarcula() else SchemeEclipse()
 }

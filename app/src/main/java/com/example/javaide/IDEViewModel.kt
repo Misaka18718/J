@@ -1,15 +1,26 @@
 package com.example.javaide
 
 import android.app.Application
+import android.content.Context
+import android.content.SharedPreferences
+import android.os.Environment
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiaoyv.java.compiler.JavaEngine
 import com.xiaoyv.java.compiler.tools.exec.JavaProgramConsole
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.util.jar.JarEntry
+import java.util.jar.JarFile
+import java.util.jar.JarOutputStream
+import java.util.jar.Manifest
 import kotlin.concurrent.withLock
 import java.util.concurrent.locks.ReentrantLock
 
@@ -17,9 +28,21 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
     private val context = app.applicationContext
 
-    /** 工程根目录（沙箱内的私有目录，无需存储权限）。 */
-    val projectDir: File =
+    /** 设置持久化。 */
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences("javaide_settings", Context.MODE_PRIVATE)
+
+    /** 工作目录模式：private=应用私有目录（无需权限），public=公共存储。 */
+    private fun privateDir(): File =
         (context.getExternalFilesDir(null) ?: context.filesDir).resolve("JavaIDEProject")
+
+    private fun publicDir(): File =
+        File(Environment.getExternalStorageDirectory(), "JavaIDE_Workspace")
+
+    /** 工程根目录（可切换私有/公共存储）。 */
+    var projectDir: File = if ((prefs.getString("workingDirMode", "private")
+            ?: "private") == "public"
+    ) publicDir() else privateDir()
 
     // ---------- UI 状态 ----------
     val tree = androidx.compose.runtime.mutableStateOf(FileUtils.buildTree(projectDir))
@@ -53,6 +76,25 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     private val tabSaved = HashMap<File, String>()
     /** 每个标签页是否有未保存修改。 */
     private val tabDirty = HashMap<File, Boolean>()
+
+    // ---------- 设置（持久化到 SharedPreferences） ----------
+    val nightMode = androidx.compose.runtime.mutableStateOf(prefs.getBoolean("nightMode", false))
+    val editorFontSize =
+        androidx.compose.runtime.mutableStateOf(prefs.getFloat("editorFontSize", 14f))
+    val consoleMaxLines =
+        androidx.compose.runtime.mutableStateOf(prefs.getInt("consoleMaxLines", 2000))
+    val autoSave = androidx.compose.runtime.mutableStateOf(prefs.getBoolean("autoSave", true))
+    val showLineNumbers =
+        androidx.compose.runtime.mutableStateOf(prefs.getBoolean("showLineNumbers", true))
+    val workingDirMode =
+        androidx.compose.runtime.mutableStateOf(prefs.getString("workingDirMode", "private")
+            ?: "private")
+
+    /** 新建文件时选中的目标目录（默认 null，落回 src 或当前文件目录）。 */
+    val selectedDir = androidx.compose.runtime.mutableStateOf<File?>(null)
+
+    /** 自动保存的防抖任务（最后一次输入后延迟落盘）。 */
+    private var autoSaveJob: Job? = null
 
     // ---------- 控制台输出 ----------
     private val _console = MutableStateFlow("")
@@ -102,6 +144,18 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         val f = openTabs.value.getOrNull(activeTab.value) ?: return
         tabContent[f] = text
         tabDirty[f] = text != (tabSaved[f] ?: "")
+        // 自动保存：最后一次改动后延迟落盘，避免每次按键都写磁盘
+        if (autoSave.value) {
+            autoSaveJob?.cancel()
+            val file = f
+            autoSaveJob = viewModelScope.launch(Dispatchers.IO) {
+                delay(800)
+                if (!file.exists()) file.parentFile?.mkdirs()
+                file.writeText(text)
+                tabSaved[file] = text
+                tabDirty[file] = false
+            }
+        }
     }
 
     fun activeTabContent(): String {
@@ -309,6 +363,26 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             if (buffer.length > MAX_LEN) {
                 buffer.delete(0, buffer.length - MAX_LEN)
             }
+            // 按“最大行数”裁剪：超出时丢弃最旧的行
+            val maxLines = consoleMaxLines.value
+            if (maxLines > 0) {
+                var lines = 1
+                for (c in buffer) if (c == '\n') lines++
+                if (lines > maxLines) {
+                    val target = lines - maxLines
+                    var removed = 0
+                    var i = 0
+                    while (removed < target && i < buffer.length) {
+                        if (buffer[i] == '\n') {
+                            removed++
+                            i++
+                        } else {
+                            i++
+                        }
+                    }
+                    buffer.delete(0, i)
+                }
+            }
         }
         _console.value = bufLock.withLock { buffer.toString() }
     }
@@ -324,5 +398,130 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleConsole() {
         consoleExpanded.value = !consoleExpanded.value
+    }
+
+    // ---------- 设置操作 ----------
+    fun setNightMode(v: Boolean) {
+        nightMode.value = v
+        prefs.edit().putBoolean("nightMode", v).apply()
+    }
+
+    fun setEditorFontSize(sp: Float) {
+        val size = sp.coerceIn(8f, 40f)
+        editorFontSize.value = size
+        prefs.edit().putFloat("editorFontSize", size).apply()
+    }
+
+    fun setConsoleMaxLines(n: Int) {
+        val v = n.coerceAtLeast(100)
+        consoleMaxLines.value = v
+        prefs.edit().putInt("consoleMaxLines", v).apply()
+    }
+
+    fun setAutoSave(v: Boolean) {
+        autoSave.value = v
+        prefs.edit().putBoolean("autoSave", v).apply()
+    }
+
+    fun setShowLineNumbers(v: Boolean) {
+        showLineNumbers.value = v
+        prefs.edit().putBoolean("showLineNumbers", v).apply()
+    }
+
+    /** 供新建文件对话框使用的目标目录：优先 selectedDir，其次当前文件目录，最后 src。 */
+    fun targetDirForNewFile(): File {
+        selectedDir.value?.let { if (it.exists()) return it }
+        currentFile.value?.parentFile?.let { if (it.exists()) return it }
+        return File(projectDir, "src").apply { mkdirs() }
+    }
+
+    // ---------- 工作目录切换 ----------
+    /** 切换工作目录（调用方需先确保已获得公共存储权限）。 */
+    fun applyWorkingDir(mode: String) {
+        val newDir = if (mode == "public") publicDir() else privateDir()
+        if (newDir.absolutePath == projectDir.absolutePath) {
+            workingDirMode.value = mode
+            prefs.edit().putString("workingDirMode", mode).apply()
+            return
+        }
+        try {
+            if (newDir.exists()) newDir.deleteRecursively()
+            copyDir(projectDir, newDir)
+        } catch (e: Throwable) {
+            appendConsole(">>> 工作目录迁移失败：${e.message}\n")
+        }
+        projectDir = newDir
+        workingDirMode.value = mode
+        prefs.edit().putString("workingDirMode", mode).apply()
+        // 重置标签页与状态，重新初始化示例工程
+        openTabs.value = emptyList()
+        activeTab.value = -1
+        tabContent.clear(); tabSaved.clear(); tabDirty.clear()
+        currentFile.value = null
+        FileUtils.ensureSampleProject(projectDir)
+        refreshTree()
+        appendConsole(">>> 工作目录已切换：${newDir.absolutePath}\n")
+    }
+
+    private fun copyDir(src: File, dst: File) {
+        if (src.isDirectory) {
+            dst.mkdirs()
+            src.listFiles()?.forEach { copyDir(it, File(dst, it.name)) }
+        } else {
+            dst.parentFile?.mkdirs()
+            FileInputStream(src).use { input -> FileOutputStream(dst).use { output -> input.copyTo(output) } }
+        }
+    }
+
+    // ---------- JAR 打包（主目标） ----------
+    /** 将 src 编译打包为 .jar 写入 jars/（可选入口类写入 Main-Class 清单）。 */
+    fun packageJar(name: String, mainClass: String) {
+        val jarName = if (name.isBlank()) "app.jar"
+        else if (name.endsWith(".jar")) name else "$name.jar"
+        viewModelScope.launch(Dispatchers.IO) {
+            appendConsole("\n>>> 正在打包 JAR：$jarName\n")
+            try {
+                val srcRoot = File(projectDir, "src")
+                if (!srcRoot.exists()) {
+                    appendConsole(">>> 请先创建 src 目录\n")
+                    return@launch
+                }
+                val buildDir = File(projectDir, "build").apply { mkdirs() }
+                appendConsole(">>> 编译 *.java -> classes.jar ...\n")
+                val compiled = JavaEngine.classCompiler.compile(srcRoot, buildDir, null) { _, _ -> }
+                val jarsDir = File(projectDir, "jars").apply { mkdirs() }
+                val outFile = File(jarsDir, jarName)
+                if (mainClass.isBlank()) {
+                    compiled.copyTo(outFile, overwrite = true)
+                } else {
+                    repackageWithMain(compiled, outFile, mainClass.trim())
+                }
+                appendConsole(">>> 打包成功：${outFile.absolutePath}\n")
+            } catch (e: Throwable) {
+                appendConsole("\n>>> 打包失败：\n${e.stackTraceToString()}\n")
+            }
+        }
+    }
+
+    /** 读取已有 jar，重写时加入 Main-Class 清单。 */
+    private fun repackageWithMain(src: File, dst: File, mainClass: String) {
+        val manifest = Manifest().apply {
+            mainAttributes.putValue("Manifest-Version", "1.0")
+            mainAttributes.putValue("Main-Class", mainClass)
+        }
+        JarFile(src).use { jar ->
+            JarOutputStream(FileOutputStream(dst), manifest).use { out ->
+                val entries = jar.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.name.equals("META-INF/MANIFEST.MF", true)) continue
+                    jar.getInputStream(entry).use { input ->
+                        out.putNextEntry(JarEntry(entry.name))
+                        input.copyTo(out)
+                        out.closeEntry()
+                    }
+                }
+            }
+        }
     }
 }
