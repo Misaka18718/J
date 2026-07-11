@@ -123,14 +123,36 @@ fun IDEScreen(vm: IDEViewModel) {
     }
     fun requestPublicDir() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // 已授权则直接切换，无需跳设置
+            if (Environment.isExternalStorageManager()) {
+                vm.applyWorkingDir("public")
+                return
+            }
+            // 1. 首选：直接打开本应用的"所有文件访问"页面（API 30+）
             try {
                 val intent = Intent(
-                    Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION,
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
                     Uri.parse("package:${context.packageName}")
                 )
                 manageStorageLauncher.launch(intent)
             } catch (_: Exception) {
-                Toast.makeText(context, "无法打开存储权限设置", Toast.LENGTH_SHORT).show()
+                // 2. 降级：打开"所有文件访问"应用列表页
+                try {
+                    val intent = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                    manageStorageLauncher.launch(intent)
+                } catch (_: Exception) {
+                    // 3. 最终降级：打开应用详情设置页
+                    try {
+                        val intent = Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.parse("package:${context.packageName}")
+                        )
+                        manageStorageLauncher.launch(intent)
+                    } catch (_: Exception) {
+                        vm.appendConsole(">>> 无法自动打开权限设置\n")
+                        vm.appendConsole(">>> 请手动前往：系统设置 → 应用 → JavaIDE → 所有文件访问权限\n")
+                    }
+                }
             }
         } else {
             legacyStorageLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
