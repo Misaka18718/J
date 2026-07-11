@@ -13,6 +13,7 @@ import com.example.javaide.IDEViewModel
 import com.example.javaide.SnippetEngine
 import io.github.rosemoe.sora.langs.java.JavaLanguage
 import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
 import io.github.rosemoe.sora.widget.schemes.SchemeDarcula
 import io.github.rosemoe.sora.widget.schemes.SchemeEclipse
 
@@ -103,8 +104,7 @@ fun CodeEditorView(
         editorRef.value?.setLineNumberEnabled(vm.showLineNumbers.value)
     }
     LaunchedEffect(vm.nightMode.value) {
-        editorRef.value?.colorScheme =
-            if (vm.nightMode.value) SchemeDarcula() else SchemeEclipse()
+        editorRef.value?.applyVisualEnhancements(vm)
     }
 
     // 切换标签页时加载对应内容（保留各标签内存文本，避免相互覆盖）
@@ -118,6 +118,13 @@ fun CodeEditorView(
         ed.setUndoEnabled(true)
         vm.loadingFile = false
         vm.setSnippetQuery("")
+        // 新建文件后把光标定位到类体空白行（缩进一级）
+        val idx = vm.pendingCursorIndex.value
+        if (idx >= 0) {
+            val (line, col) = SnippetEngine.indexToLineCol(content, idx)
+            ed.setSelection(line, col)
+            vm.pendingCursorIndex.value = -1
+        }
     }
 }
 
@@ -125,5 +132,43 @@ fun CodeEditorView(
 private fun CodeEditor.applyEditorSettings(vm: IDEViewModel, ctx: Context) {
     setTextSize(vm.editorFontSize.value)
     setLineNumberEnabled(vm.showLineNumbers.value)
-    colorScheme = if (vm.nightMode.value) SchemeDarcula() else SchemeEclipse()
+    applyVisualEnhancements(vm)
+}
+
+/**
+ * 应用编辑器视觉增强（随夜间模式切换配色）：
+ *  - 括号匹配高亮：光标挨着括号时高亮配对括号（背景/边框）；
+ *  - 缩进参考线：从代码块起始行延伸到结束行的浅灰竖线；
+ *  - 连续空格/制表符可视化：仅绘制行首缩进（通常为连续 ≥2 空格或 Tab），
+ *    不绘制单词间的单个空格，避免视觉噪声。
+ */
+private fun CodeEditor.applyVisualEnhancements(vm: IDEViewModel) {
+    val night = vm.nightMode.value
+    colorScheme = if (night) SchemeDarcula() else SchemeEclipse()
+
+    // 配色覆盖（括号内为 ARGB）
+    colorScheme.setColor(EditorColorScheme.MATCHED_TEXT_BACKGROUND, 0x334A90D9.toInt())
+    colorScheme.setColor(EditorColorScheme.MATCHED_TEXT_BORDER, 0xFF4A90D9.toInt())
+    colorScheme.setColor(
+        EditorColorScheme.BLOCK_LINE,
+        if (night) 0xFF555555.toInt() else 0xFFD0D0D0.toInt()
+    )
+    colorScheme.setColor(
+        EditorColorScheme.BLOCK_LINE_CURRENT,
+        if (night) 0xFF666666.toInt() else 0xFFB0B0B0.toInt()
+    )
+    colorScheme.setColor(
+        EditorColorScheme.NON_PRINTABLE_CHAR,
+        if (night) 0xFF666666.toInt() else 0xFF888888.toInt()
+    )
+
+    // 括号匹配高亮
+    setHighlightBracketPair(true)
+    // 缩进参考线（浅灰、半透明观感）
+    setBlockLineEnabled(true)
+    setBlockLineWidth(1f)
+    // 空格可视化：行首缩进（连续 ≥2 空格或 Tab），不含单词间单个空格
+    setNonPrintablePaintingFlags(
+        CodeEditor.FLAG_DRAW_WHITESPACE_LEADING or CodeEditor.FLAG_DRAW_TAB_SAME_AS_SPACE
+    )
 }

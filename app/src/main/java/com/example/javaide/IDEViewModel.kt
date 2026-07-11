@@ -64,6 +64,9 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     val toast = _toast.asSharedFlow()
     private fun toast(msg: String) { _toast.tryEmit(msg) }
 
+    /** 新建文件后期望的光标位置（char index）；-1 表示不定位。由编辑器在加载内容后消费。 */
+    val pendingCursorIndex = androidx.compose.runtime.mutableStateOf(-1)
+
     /** 撤销 / 重做可用状态（由编辑器内容变化事件更新）。 */
     val canUndo = androidx.compose.runtime.mutableStateOf(false)
     val canRedo = androidx.compose.runtime.mutableStateOf(false)
@@ -285,13 +288,18 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         appendConsole("已创建包路径：${dir.absolutePath}\n")
     }
 
-    /** 在指定目录下新建 Java 文件并打开。 */
+    /** 在指定目录下新建 Java 文件并打开。自动生成模板，并把光标定位到类体空白行（缩进一级）。 */
     fun createFile(name: String, dir: File) {
         val fileName = if (name.endsWith(".java")) name else "$name.java"
         val file = File(dir, fileName)
         if (!file.exists()) {
             file.parentFile?.mkdirs()
-            file.writeText(FileUtils.defaultFileContent(projectDir, file))
+            val content = FileUtils.defaultFileContent(projectDir, file)
+            file.writeText(content)
+            // 光标定位到 public class 两个括号之间的空白行、缩进之后：
+            // 找到 "{<换行>"，其后为类体首行（已含一级缩进），光标落在缩进之后。
+            val brace = content.indexOf("{\n")
+            pendingCursorIndex.value = if (brace >= 0) brace + 2 + 4 else content.length
         }
         refreshTree()
         openFile(file)

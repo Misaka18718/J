@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Redo
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.AlertDialog
@@ -172,6 +173,11 @@ fun IDEScreen(vm: IDEViewModel) {
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = "设置")
                     }
+                    IconButton(
+                        onClick = { vm.saveContent(editorRef.value?.text?.toString() ?: "") }
+                    ) {
+                        Icon(Icons.Filled.Save, contentDescription = "保存")
+                    }
                     Box {
                         var menuOpen by remember { mutableStateOf(false) }
                         IconButton(onClick = { menuOpen = true }) {
@@ -201,13 +207,6 @@ fun IDEScreen(vm: IDEViewModel) {
                             DropdownMenuItem(
                                 text = { Text("打包 JAR") },
                                 onClick = { menuOpen = false; showJar = true }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("保存") },
-                                onClick = {
-                                    menuOpen = false
-                                    vm.saveContent(editorRef.value?.text?.toString() ?: "")
-                                }
                             )
                             DropdownMenuItem(
                                 text = { Text("清空控制台") },
