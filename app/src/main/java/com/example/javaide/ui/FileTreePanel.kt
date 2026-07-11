@@ -75,7 +75,7 @@ private fun FileTreeNode(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { vm.toggleDir(node.file.absolutePath) }
-                .padding(start = (depth * 12 + 8).dp, top = 4.dp, bottom = 4.dp),
+                .padding(start = (depth * 12 + 8).dp, top = 4.dp, end = 0.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(

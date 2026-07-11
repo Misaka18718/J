@@ -40,7 +40,10 @@ android {
         jvmTarget = "17"
         // compiler-d8 (com.xiaoyv.java.compiler) 用更新的 Kotlin 编译，其元数据版本
         // 高于本编译器，跳过版本检查以避免 K2 在检查该不兼容类时崩溃。
-        freeCompilerArgs += listOf("-Xskip-metadata-version-check")
+        freeCompilerArgs += listOf(
+            "-Xskip-metadata-version-check",
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+        )
     }
 
     packaging {
@@ -60,10 +63,11 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.activity:activity-compose:1.8.2")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    // 以下两个由 Compose BOM 统一版本管理，避免与 Compose 1.7 不匹配
+    implementation("androidx.activity:activity-compose")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
     // ---- 代码编辑器（含 Java 语法高亮与自动补全）----
     val sora = "0.24.4"
