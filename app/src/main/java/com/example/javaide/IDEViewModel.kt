@@ -139,7 +139,6 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             val cur = currentFile.value
             if (cur != null && (cur == file || cur.path.startsWith(file.path + File.separator))) {
                 currentFile.value = null
-                applySnippet = false
             }
             refreshTree()
             appendConsole("已删除：${file.name}\n")
