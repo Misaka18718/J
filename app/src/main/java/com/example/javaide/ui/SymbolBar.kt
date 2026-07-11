@@ -85,7 +85,7 @@ fun SymbolBar(
             .pointerInput(Unit) {
                 detectVerticalDragGestures(
                     onDragStart = { dragTotal.value = 0f },
-                    onDrag = { _, amount -> dragTotal.value += amount },
+                    onVerticalDrag = { _, amount -> dragTotal.value += amount },
                     onDragEnd = {
                         if (dragTotal.value < -40f) expanded = true
                         else if (dragTotal.value > 40f) expanded = false
@@ -140,9 +140,9 @@ private fun SymbolRow(
     }
 }
 
-/** 单个符号键：点击即触发插入。 */
+/** 单个符号键：点击即触发插入。声明为 RowScope 扩展，使 weight 可用。 */
 @Composable
-private fun SymbolKey(label: String, onClick: () -> Unit) {
+private fun RowScope.SymbolKey(label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .weight(1f)
