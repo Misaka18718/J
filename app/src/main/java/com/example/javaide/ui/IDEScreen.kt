@@ -425,7 +425,7 @@ fun IDEScreen(vm: IDEViewModel) {
 
     // 打包 JAR
     if (showJar) {
-        var jarName by remember { mutableStateOf("app.jar") }
+        var jarName by remember { mutableStateOf("") }
         var mainClass by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showJar = false },
@@ -440,7 +440,7 @@ fun IDEScreen(vm: IDEViewModel) {
                     OutlinedTextField(
                         value = jarName,
                         onValueChange = { jarName = it },
-                        placeholder = { Text("输出文件名，如 app.jar") },
+                        placeholder = { Text("xxx.jar") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -455,10 +455,13 @@ fun IDEScreen(vm: IDEViewModel) {
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    vm.packageJar(jarName, mainClass)
-                    showJar = false
-                }) { Text("打包") }
+                TextButton(
+                    onClick = {
+                        vm.packageJar(jarName, mainClass)
+                        showJar = false
+                    },
+                    enabled = jarName.isNotBlank()
+                ) { Text("打包") }
             },
             dismissButton = {
                 TextButton(onClick = { showJar = false }) { Text("取消") }

@@ -121,7 +121,6 @@ fun FullScreenConsole(
                 OutlinedTextField(
                     value = input,
                     onValueChange = { input = it },
-                    placeholder = { Text("输入（供 Scanner / System.in 读取）") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),

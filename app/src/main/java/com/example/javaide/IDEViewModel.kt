@@ -121,9 +121,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         FileUtils.ensureSampleProject(projectDir)
-        val sample = File(projectDir, "src/com/example/demo/Main.java")
-        if (sample.exists()) openFile(sample)
         refreshTree()
+        restoreTabState()
     }
 
     // ---------- 文件树 ----------
@@ -153,6 +152,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             openTabs.value = list
         }
         syncActive()
+        saveTabState()
     }
 
     /** 把当前激活标签页的编辑器文本回写到内存缓存（供切换/关闭时保留）。 */
@@ -188,6 +188,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         commitActiveTab()
         activeTab.value = index
         syncActive()
+        saveTabState()
     }
 
     /** 判断指定标签页是否存在未保存修改（用于关闭前的确认保存）。 */
@@ -230,6 +231,33 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         if (activeTab.value >= list.size) activeTab.value = list.lastIndex
         else if (activeTab.value > index) activeTab.value -= 1
         syncActive()
+        saveTabState()
+    }
+
+    /** 持久化当前标签页状态（退出重进恢复）。 */
+    private fun saveTabState() {
+        val paths = openTabs.value.map { it.absolutePath }
+        val active = activeTabFile()?.absolutePath ?: ""
+        prefs.edit()
+            .putString("savedTabPaths", paths.joinToString("\n"))
+            .putString("savedActivePath", active)
+            .apply()
+    }
+
+    /** 恢复上次退出时的标签页（跳过已删除的文件）。 */
+    private fun restoreTabState() {
+        val pathsStr = prefs.getString("savedTabPaths", "") ?: ""
+        if (pathsStr.isBlank()) return
+        val paths = pathsStr.split("\n").filter { it.isNotBlank() }
+        val activePath = prefs.getString("savedActivePath", "") ?: ""
+        for (path in paths) {
+            val f = File(path)
+            if (f.isFile && f.exists()) openFile(f)
+        }
+        if (activePath.isNotBlank()) {
+            val idx = openTabs.value.indexOfFirst { it.absolutePath == activePath }
+            if (idx >= 0) activeTab.value = idx
+        }
     }
 
     /** 把激活标签页的内存内容落盘（切换/关闭前调用，避免丢失）。不产生控制台输出。 */

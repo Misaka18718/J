@@ -41,29 +41,9 @@ object FileUtils {
         return "${header}public class $cls {\n    \n}\n"
     }
 
-    /** 初始化示例工程，保证首次打开就有内容可运行。 */
+    /** 初始化工程目录（只建必要的 src / out 目录，不创建演示文件）。 */
     fun ensureSampleProject(projectDir: File) {
-        val src = File(projectDir, "src").apply { mkdirs() }
-        val demoPkg = File(src, "com/example/demo").apply { mkdirs() }
-        val main = File(demoPkg, "Main.java")
-        if (!main.exists()) {
-            main.writeText(
-                """
-                package com.example.demo;
-
-                public class Main {
-                    public static void main(String[] args) {
-                        System.out.println("Hello from Java IDE!");
-                        int sum = 0;
-                        for (int i = 1; i <= 5; i++) {
-                            sum += i;
-                        }
-                        System.out.println("1..5 求和 = " + sum);
-                    }
-                }
-                """.trimIndent() + "\n"
-            )
-        }
+        File(projectDir, "src").mkdirs()
         File(projectDir, "out").mkdirs()
     }
 }
