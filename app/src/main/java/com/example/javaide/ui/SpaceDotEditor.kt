@@ -46,14 +46,14 @@ class SpaceDotEditor @JvmOverloads constructor(
         if (firstLine > lastLine) return
 
         // 复用编辑器自身字体 / 字号，保证 `·` 与正文基线对齐
-        val basePaint = getRenderer().getPaint()
-        dotPaint.typeface = basePaint.typeface
-        dotPaint.textSize = basePaint.textSize
+        dotPaint.typeface = getTypefaceText()
+        dotPaint.textSize = getTextSizePx()
         dotPaint.color = spaceDotColor
         val fm = Paint.FontMetricsInt()
         dotPaint.getFontMetricsInt(fm)
 
-        val halfSpace = basePaint.getSpaceWidth() / 2f
+        // 空格的绘制宽度（与正文字体 / 字号一致），取一半作为 `·` 的居中偏移
+        val halfSpace = dotPaint.measureText(" ") / 2f
         val offsetY = getOffsetY().toFloat()
 
         for (ln in firstLine..lastLine) {
