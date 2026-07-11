@@ -42,7 +42,8 @@ android {
         // 高于本编译器，跳过版本检查以避免 K2 在检查该不兼容类时崩溃。
         freeCompilerArgs += listOf(
             "-Xskip-metadata-version-check",
-            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api"
+            "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"
         )
     }
 
