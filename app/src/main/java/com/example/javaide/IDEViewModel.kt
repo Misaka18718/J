@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Environment
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiaoyv.java.compiler.JavaEngine
@@ -11,7 +12,9 @@ import com.xiaoyv.java.compiler.tools.exec.JavaProgramConsole
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.io.File
@@ -55,6 +58,11 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         androidx.compose.runtime.mutableStateOf<JavaProgramConsole?>(null)
     val expandedDirs =
         androidx.compose.runtime.mutableStateOf<Set<String>>(emptySet())
+
+    /** Toast 提示流：UI 侧收集后弹出，用于“创建 src/out/保存”等操作的明确用户反馈。 */
+    private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val toast = _toast.asSharedFlow()
+    private fun toast(msg: String) { _toast.tryEmit(msg) }
 
     /** 撤销 / 重做可用状态（由编辑器内容变化事件更新）。 */
     val canUndo = androidx.compose.runtime.mutableStateOf(false)
@@ -208,25 +216,60 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 文件操作 ----------
     fun saveContent(text: String) {
-        val f = currentFile.value ?: return
-        if (!f.exists()) f.parentFile?.mkdirs()
-        f.writeText(text)
-        tabContent[f] = text
-        tabSaved[f] = text
-        tabDirty[f] = false
-        appendConsole("已保存：${f.name}\n")
+        val f = currentFile.value ?: run {
+            toast("没有可保存的文件")
+            return
+        }
+        try {
+            if (!f.exists()) f.parentFile?.mkdirs()
+            f.writeText(text)
+            tabContent[f] = text
+            tabSaved[f] = text
+            tabDirty[f] = false
+            appendConsole("已保存：${f.name}\n")
+            toast("已保存：${f.name}")
+        } catch (e: Throwable) {
+            appendConsole("保存失败：${e.message}\n")
+            toast("保存失败：${e.message}")
+        }
     }
 
     fun createSrc() {
-        File(projectDir, "src").mkdirs()
-        refreshTree()
-        appendConsole("已创建 src/\n")
+        val dir = File(projectDir, "src")
+        when {
+            dir.exists() -> {
+                refreshTree()
+                toast("src 已存在")
+            }
+            dir.mkdirs() -> {
+                refreshTree()
+                appendConsole("已创建 src/\n")
+                toast("已创建 src/ 目录")
+            }
+            else -> {
+                appendConsole("创建 src/ 失败\n")
+                toast("创建 src/ 失败")
+            }
+        }
     }
 
     fun createOut() {
-        File(projectDir, "out").mkdirs()
-        refreshTree()
-        appendConsole("已创建 out/\n")
+        val dir = File(projectDir, "out")
+        when {
+            dir.exists() -> {
+                refreshTree()
+                toast("out 已存在")
+            }
+            dir.mkdirs() -> {
+                refreshTree()
+                appendConsole("已创建 out/\n")
+                toast("已创建 out/ 目录")
+            }
+            else -> {
+                appendConsole("创建 out/ 失败\n")
+                toast("创建 out/ 失败")
+            }
+        }
     }
 
     /** 按包名创建目录，例如 "com.example.demo"。 */

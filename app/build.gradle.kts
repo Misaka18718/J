@@ -13,11 +13,25 @@ android {
         // compiler-d8（ECJ + D8 安卓端 Java 编译引擎）的 manifest 要求 minSdk >= 24
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "2.0"
+        versionCode = 5
+        versionName = "2.1"
+    }
+
+    // 固定 debug 签名：仓库内提交 debug.keystore，CI 与本机均使用同一把密钥，
+    // 保证各版本（v2.1 及之后）签名一致，可覆盖安装、避免“签名不一致”。
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(

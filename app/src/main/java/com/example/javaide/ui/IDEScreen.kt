@@ -15,7 +15,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,6 +61,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -70,6 +73,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.javaide.IDEViewModel
 import com.example.javaide.Snippets
+import com.example.javaide.ui.FullScreenConsole
+import com.example.javaide.ui.SymbolBar
 import io.github.rosemoe.sora.widget.CodeEditor
 import java.io.File
 
@@ -88,8 +93,15 @@ fun IDEScreen(vm: IDEViewModel) {
     var showSettings by remember { mutableStateOf(false) }
     var showFolderPicker by remember { mutableStateOf(false) }
     var showJar by remember { mutableStateOf(false) }
+    var showConsole by remember { mutableStateOf(false) }
     var newFileName by remember { mutableStateOf("") }
     var newPkgName by remember { mutableStateOf("") }
+
+    // 收集 ViewModel 的 Toast 提示并弹出（创建 src/out/保存等操作的用户反馈）
+    val toastCtx = context
+    LaunchedEffect(Unit) {
+        vm.toast.collect { msg -> Toast.makeText(toastCtx, msg, Toast.LENGTH_SHORT).show() }
+    }
 
     // 公共存储权限（MANAGE_EXTERNAL_STORAGE 走设置页 Intent；低版本走运行时权限）
     val manageStorageLauncher = rememberLauncherForActivityResult(
@@ -147,7 +159,12 @@ fun IDEScreen(vm: IDEViewModel) {
                         Icon(Icons.Filled.Redo, contentDescription = "重做")
                     }
                     IconButton(
-                        onClick = { editorRef.value?.text?.toString()?.let { vm.runCode(it) } },
+                        onClick = {
+                            editorRef.value?.text?.toString()?.let {
+                                vm.runCode(it)
+                                showConsole = true
+                            }
+                        },
                         enabled = !running
                     ) {
                         Icon(Icons.Filled.PlayArrow, contentDescription = "运行")
@@ -211,14 +228,6 @@ fun IDEScreen(vm: IDEViewModel) {
             }
 
             Column(Modifier.fillMaxSize().weight(1f)) {
-                // 控制台：展开时占约 1/3，折叠时仅顶部一条
-                ConsolePanel(
-                    vm,
-                    Modifier.fillMaxWidth().then(
-                        if (vm.consoleExpanded.value) Modifier.weight(1f)
-                        else Modifier.height(52.dp)
-                    )
-                )
                 // 标签页栏：横向滚动，点击切换、× 关闭
                 AnimatedVisibility(
                     visible = vm.openTabs.value.isNotEmpty(),
@@ -227,8 +236,8 @@ fun IDEScreen(vm: IDEViewModel) {
                 ) {
                     TabBar(vm)
                 }
-                // 源代码：占约 2/3
-                Box(Modifier.fillMaxWidth().weight(2f)) {
+                // 源代码：占满剩余空间（控制台已改为全屏独立页面）
+                Box(Modifier.fillMaxWidth().weight(1f)) {
                     CodeEditorView(vm, editorRef, Modifier.fillMaxSize())
 
                     // 用独立 Column 承载片段弹窗，使 AnimatedVisibility 只处于 ColumnScope，
@@ -249,6 +258,8 @@ fun IDEScreen(vm: IDEViewModel) {
                         }
                     }
                 }
+                // 底部快捷符号输入栏：随键盘上推、始终在键盘之上
+                SymbolBar(vm, editorRef)
             }
         }
         }
@@ -263,6 +274,19 @@ fun IDEScreen(vm: IDEViewModel) {
             vm = vm,
             onBack = { showSettings = false },
             onTogglePublic = { on -> if (on) requestPublicDir() }
+        )
+    }
+
+    // 全屏控制台：点击 ▶ 时从右侧滑入，← 返回滑出
+    AnimatedVisibility(
+        visible = showConsole,
+        enter = slideInHorizontally(initialOffsetX = { it }),
+        exit = slideOutHorizontally(targetOffsetX = { it })
+    ) {
+        FullScreenConsole(
+            vm = vm,
+            onBack = { showConsole = false },
+            modifier = Modifier.fillMaxSize()
         )
     }
     }
