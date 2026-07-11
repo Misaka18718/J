@@ -6,6 +6,7 @@
 - **代码编辑器**：基于 [Sora Editor](https://github.com/Rosemoe/sora-editor)，带 Java 语法高亮、自动补全、等宽字体。
 - **快捷提示词（代码片段）**：输入触发词（如 `psvm`）即弹出候选列表，点选后展开为模板代码，光标自动落到 `$CARET$` 位置。内置 `psvm / sout / sos / fori / foreach / if / el / wh / sw / try / psf / classn / soutv`。
 - **快捷创建工程结构**：一键创建 `src`、`out`，按包名（如 `com.example.demo`）创建多级 `package` 目录，以及新建 Java 文件。
+- **编辑辅助**：顶栏提供 **撤销 / 重做** 按钮（移动端无 Ctrl+Z）；文件树中 **长按文件** 可重命名或删除。
 - **试运行**：编译 (`ECJ`) → 转 Dex (`D8`) → 在 ART 上反射运行 `main` 方法，并把 `System.out / System.err` 重定向到控制台；支持向 `System.in` 输入（供 `Scanner` 等读取）。
 - **清晰布局**：
   - 左侧可折叠目录树；
@@ -72,6 +73,8 @@ JavaIDE/
 - **标准输入**：程序运行且控制台展开时，底部出现输入框，输入后点“发送”（或键盘 Send），数据写入 `System.in`。
 - **停止**：控制台右上“停止”按钮，关闭正在运行的程序。
 - **片段提示**：在编辑器里输入触发词（如 `psvm`），上方出现候选，点击即可展开；继续输入会实时过滤。
+- **撤销 / 重做**：顶栏 ↩ / ↪ 按钮，等价于桌面端 Ctrl+Z / Ctrl+Y；可用状态随编辑内容自动变化。
+- **文件重命名 / 删除**：在左侧目录树中 **长按某个文件**，弹出菜单选择“重命名”或“删除”（删除目录会递归进行，均需二次确认）。
 - **新建文件 / 包 / src / out**：顶栏 ⋮ 菜单。新建文件默认按所在目录推导 `package` 并生成类骨架。
 
 ---
@@ -82,7 +85,7 @@ JavaIDE/
 | --- | --- |
 | `io.github.rosemoe:editor:0.24.4` + `language-java` | 代码编辑器与 Java 高亮/补全 |
 | `io.github.xiaoyvyv:compiler-d8:1.0.4` | 安卓端 Java 编译 + Dex + 反射运行 |
-| Jetpack Compose (BOM 2024.02.00) | UI |
+| Jetpack Compose (BOM 2024.10.01) | UI |
 
 ---
 

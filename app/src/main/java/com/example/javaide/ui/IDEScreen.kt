@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.automirrored.filled.Redo
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -61,6 +63,18 @@ fun IDEScreen(vm: IDEViewModel) {
                     }
                 },
                 actions = {
+                    IconButton(
+                        onClick = { editorRef.value?.text?.undo() },
+                        enabled = vm.canUndo.value
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "撤销")
+                    }
+                    IconButton(
+                        onClick = { editorRef.value?.text?.redo() },
+                        enabled = vm.canRedo.value
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "重做")
+                    }
                     IconButton(
                         onClick = {
                             editorRef.value?.text?.toString()?.let { vm.runCode(it) }

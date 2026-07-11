@@ -36,14 +36,22 @@ fun CodeEditorView(
                 typefaceText = Typeface.MONOSPACE
                 setEditorLanguage(JavaLanguage())
 
-                // 初始加载当前文件
+                // 初始加载当前文件（不记录到撤销栈，作为基线）
                 vm.currentFile.value?.let { f: File ->
-                    if (f.exists()) setText(f.readText())
+                    if (f.exists()) {
+                        vm.loadingFile = true
+                        text.setUndoEnabled(false)
+                        setText(f.readText())
+                        text.setUndoEnabled(true)
+                        vm.loadingFile = false
+                    }
                 }
 
                 // 监听文本变化，解析光标前的“词”作为片段查询
                 subscribeAlways(ContentChangeEvent::class.java) {
-                    if (!vm.applyingSnippet) {
+                    vm.canUndo.value = text.canUndo()
+                    vm.canRedo.value = text.canRedo()
+                    if (!vm.applyingSnippet && !vm.loadingFile) {
                         val idx = SnippetEngine.caretIndex(this)
                         val token = SnippetEngine.currentToken(text.toString(), idx)
                         vm.setSnippetQuery(token)
@@ -55,11 +63,16 @@ fun CodeEditorView(
         }
     )
 
-    // 切换文件时加载新内容
+    // 切换文件时加载新内容（不记录到撤销栈，作为基线）；文件不存在则清空编辑器
     val file = vm.currentFile.value
     LaunchedEffect(file?.absolutePath) {
-        file?.let { f: File ->
-            if (f.exists()) editorRef.value?.setText(f.readText())
-        }
+        val editor = editorRef.value ?: return@LaunchedEffect
+        vm.loadingFile = true
+        editor.text.setUndoEnabled(false)
+        if (file != null && file.exists()) editor.setText(file.readText())
+        else editor.setText("")
+        editor.text.setUndoEnabled(true)
+        vm.loadingFile = false
+        vm.setSnippetQuery("")
     }
 }
