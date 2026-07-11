@@ -126,7 +126,7 @@ fun SymbolBar(
         )
 
         // ===== 第 1 行：常驻 7 个符号（始终可见） =====
-        SymbolRow(editorRef = editorRef, symbols = row1, weight = true)
+        SymbolRow(editorRef = editorRef, symbols = row1)
 
         // ===== 展开内容（第 2/3 行）=====
         // 用固定高度的裁剪框承载，高度 = 进度 × 自然高度，实现“从上到下依次显示”
@@ -147,20 +147,19 @@ fun SymbolBar(
                     .padding(vertical = 2.dp)
             ) {
                 // 第 2 行（均匀分布）
-                SymbolRow(editorRef = editorRef, symbols = row2, weight = true)
+                SymbolRow(editorRef = editorRef, symbols = row2)
                 // 第 3 行（括号行：7 个均匀 weight 格子，左边缘与符号行对齐）
-                SymbolRow(editorRef = editorRef, symbols = row3, weight = true)
+                SymbolRow(editorRef = editorRef, symbols = row3)
             }
         }
     }
 }
 
-/** 横向排列的一行符号键。weight=true 时均分宽度（符号行 / 括号行）。label 为空时渲染为不可点击的等宽空白占位格。 */
+/** 横向排列的一行符号键。所有键均分宽度（符号行 / 括号行）。label 为空时渲染为不可点击的等宽空白占位格。 */
 @Composable
 private fun SymbolRow(
     editorRef: androidx.compose.runtime.MutableState<CodeEditor?>,
-    symbols: List<Pair<String, (CodeEditor?) -> Unit>>,
-    weight: Boolean
+    symbols: List<Pair<String, (CodeEditor?) -> Unit>>
 ) {
     Row(
         modifier = Modifier
@@ -173,20 +172,20 @@ private fun SymbolRow(
                 // 空白占位格：与符号键等宽（weight），不显示内容、不响应点击
                 Box(Modifier.weight(1f).padding(vertical = 8.dp))
             } else {
-                SymbolKey(label, weight) { action(editorRef.value) }
+                SymbolKey(label) { action(editorRef.value) }
             }
         }
     }
 }
 
-/** 单个符号键：点击即触发插入。声明为 RowScope 扩展，使 weight 可用。 */
+/** 单个符号键：点击即触发插入。声明为 RowScope 扩展，使 weight 可用（始终均分宽度）。 */
 @Composable
-private fun RowScope.SymbolKey(label: String, weight: Boolean = true, onClick: () -> Unit) {
+private fun RowScope.SymbolKey(label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .then(if (weight) Modifier.weight(1f) else Modifier.wrapContentWidth())
+            .weight(1f)
             .clickable(onClick = onClick)
-            .padding(vertical = 8.dp, horizontal = if (weight) 0.dp else 2.dp),
+            .padding(vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
