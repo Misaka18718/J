@@ -8,8 +8,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContentColor
 import androidx.lifecycle.ViewModelProvider
 import com.example.javaide.ui.IDEScreen
 
