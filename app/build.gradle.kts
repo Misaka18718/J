@@ -9,7 +9,8 @@ android {
 
     defaultConfig {
         applicationId = "com.example.javaide"
-        minSdk = 21
+        // compiler-d8（ECJ + D8 安卓端 Java 编译引擎）的 manifest 要求 minSdk >= 24
+        minSdk = 24
         targetSdk = 34
         versionCode = 1
         versionName = "1.0"
