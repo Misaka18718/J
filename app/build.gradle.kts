@@ -38,6 +38,9 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
+        // compiler-d8 (com.xiaoyv.java.compiler) 用更新的 Kotlin 编译，其元数据版本
+        // 高于本编译器，跳过版本检查以避免 K2 在检查该不兼容类时崩溃。
+        freeCompilerArgs += listOf("-Xskip-metadata-version-check")
     }
 
     packaging {
