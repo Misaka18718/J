@@ -14,6 +14,7 @@ import com.example.javaide.SnippetEngine
 import io.github.rosemoe.sora.langs.java.JavaLanguage
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.schemes.EditorColorScheme
+import com.example.javaide.ui.SpaceDotEditor
 import io.github.rosemoe.sora.widget.schemes.SchemeDarcula
 import io.github.rosemoe.sora.widget.schemes.SchemeEclipse
 
@@ -31,7 +32,7 @@ fun CodeEditorView(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            CodeEditor(ctx).apply {
+            SpaceDotEditor(ctx).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -41,6 +42,8 @@ fun CodeEditorView(
 
                 // 初始应用各项编辑器设置
                 applyEditorSettings(vm, ctx)
+                // 未打开任何文件时禁止编辑（需求三）
+                isEditable = vm.openTabs.value.isNotEmpty()
 
                 // 双指缩放调整字号（关闭 Sora 自带缩放，自行处理）
                 setScalable(false)
@@ -106,6 +109,10 @@ fun CodeEditorView(
     LaunchedEffect(vm.nightMode.value) {
         editorRef.value?.applyVisualEnhancements(vm)
     }
+    // 标签页数量变化（如关闭最后一个）时，同步“是否可编辑”
+    LaunchedEffect(vm.openTabs.value.size) {
+        editorRef.value?.isEditable = vm.openTabs.value.isNotEmpty()
+    }
 
     // 切换标签页时加载对应内容（保留各标签内存文本，避免相互覆盖）
     val activePath = vm.openTabs.value.getOrNull(vm.activeTab.value)?.absolutePath
@@ -139,8 +146,8 @@ private fun CodeEditor.applyEditorSettings(vm: IDEViewModel, ctx: Context) {
  * 应用编辑器视觉增强（随夜间模式切换配色）：
  *  - 括号匹配高亮：光标挨着括号时高亮配对括号（背景/边框）；
  *  - 缩进参考线：从代码块起始行延伸到结束行的浅灰竖线；
- *  - 连续空格/制表符可视化：仅绘制行首缩进（通常为连续 ≥2 空格或 Tab），
- *    不绘制单词间的单个空格，避免视觉噪声。
+ *  - 连续空格可视化：由 [SpaceDotEditor] 叠加绘制（连续 ≥2 空格显示 `·`，
+ *    单个空格不显示），颜色随夜间模式切换。原生非打印字符绘制已关闭，避免重复。
  */
 private fun CodeEditor.applyVisualEnhancements(vm: IDEViewModel) {
     val night = vm.nightMode.value
@@ -162,13 +169,16 @@ private fun CodeEditor.applyVisualEnhancements(vm: IDEViewModel) {
         if (night) 0xFF666666.toInt() else 0xFF888888.toInt()
     )
 
+    // 连续空格点的颜色（需求二）
+    if (this is SpaceDotEditor) {
+        spaceDotColor = if (night) 0xFF666666.toInt() else 0xFF888888.toInt()
+    }
+
     // 括号匹配高亮
     setHighlightBracketPair(true)
     // 缩进参考线（浅灰、半透明观感）
     setBlockLineEnabled(true)
     setBlockLineWidth(1f)
-    // 空格可视化：行首缩进（连续 ≥2 空格或 Tab），不含单词间单个空格
-    setNonPrintablePaintingFlags(
-        CodeEditor.FLAG_DRAW_WHITESPACE_LEADING or CodeEditor.FLAG_DRAW_TAB_SAME_AS_SPACE
-    )
+    // 关闭原生非打印字符绘制：空格可视化改由 SpaceDotEditor 叠加层精确处理
+    setNonPrintablePaintingFlags(0)
 }

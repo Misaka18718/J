@@ -183,18 +183,40 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         syncActive()
     }
 
-    fun closeTab(index: Int) {
+    /** 判断指定标签页是否存在未保存修改（用于关闭前的确认保存）。 */
+    fun isTabDirty(index: Int): Boolean {
+        val f = openTabs.value.getOrNull(index) ?: return false
+        return tabDirty[f] ?: false
+    }
+
+    /** 将指定标签页的当前内存内容落盘（不关闭），并标记为已保存。 */
+    fun saveTab(index: Int) {
+        val f = openTabs.value.getOrNull(index) ?: return
+        val txt = tabContent[f] ?: return
+        if (!f.exists()) f.parentFile?.mkdirs()
+        f.writeText(txt)
+        tabSaved[f] = txt
+        tabDirty[f] = false
+    }
+
+    /**
+     * 关闭标签页。`save = true` 时先落盘再关闭（对应“保存”），
+     * `save = false` 时直接丢弃该标签页的未保存修改（对应“不保存”）。
+     */
+    fun closeTab(index: Int, save: Boolean = true) {
         val list = openTabs.value.toMutableList()
         if (index !in list.indices) return
         commitActiveTab()
         val file = list[index]
-        // 关闭非激活标签页时，也把它的内存内容落盘，避免未保存修改丢失
-        tabContent[file]?.let { txt ->
-            if (!file.exists()) file.parentFile?.mkdirs()
-            file.writeText(txt)
-            tabSaved[file] = txt
-            tabDirty[file] = false
+        if (save) {
+            // 关闭前把该标签页的内存内容落盘，避免未保存修改丢失
+            tabContent[file]?.let { txt ->
+                if (!file.exists()) file.parentFile?.mkdirs()
+                file.writeText(txt)
+                tabSaved[file] = txt
+            }
         }
+        tabDirty[file] = false
         list.removeAt(index)
         openTabs.value = list
         tabContent.remove(file); tabDirty.remove(file); tabSaved.remove(file)

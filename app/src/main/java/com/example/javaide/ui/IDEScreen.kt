@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Redo
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -140,7 +141,8 @@ fun IDEScreen(vm: IDEViewModel) {
         Scaffold(
             topBar = {
             TopAppBar(
-                title = { Text("Java IDE") },
+                // 移除标题文字，给右侧操作图标（撤销/重做/运行/控制台/设置/保存/更多）让出空间
+                title = { },
                 navigationIcon = {
                     IconButton(onClick = { vm.toggleTree() }) {
                         Icon(Icons.Filled.Menu, contentDescription = "目录")
@@ -169,6 +171,10 @@ fun IDEScreen(vm: IDEViewModel) {
                         enabled = !running
                     ) {
                         Icon(Icons.Filled.PlayArrow, contentDescription = "运行")
+                    }
+                    // 独立控制台入口：仅打开全屏控制台，不触发编译/运行
+                    IconButton(onClick = { showConsole = true }) {
+                        Icon(Icons.Filled.Terminal, contentDescription = "控制台")
                     }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Filled.Settings, contentDescription = "设置")
@@ -253,6 +259,20 @@ fun IDEScreen(vm: IDEViewModel) {
                                 onPick = { insertSnippet(editorRef.value, it, vm) },
                                 modifier = Modifier
                                     .padding(start = 8.dp, top = 8.dp)
+                            )
+                        }
+                    }
+
+                    // 未打开任何文件时禁止编辑，并提示用户打开 / 新建
+                    if (vm.openTabs.value.isEmpty()) {
+                        Box(
+                            Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "请打开或新建一个 Java 文件",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -418,6 +438,8 @@ fun IDEScreen(vm: IDEViewModel) {
 private fun TabBar(vm: IDEViewModel) {
     val openTabs = vm.openTabs.value
     val activeTab = vm.activeTab.value
+    // 待关闭且需确认保存的标签页索引（为 null 表示不弹窗）
+    var pendingClose by remember { mutableStateOf<Int?>(null) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -440,7 +462,11 @@ private fun TabBar(vm: IDEViewModel) {
                 Text(file.name, style = MaterialTheme.typography.labelSmall)
                 Spacer(Modifier.width(4.dp))
                 IconButton(
-                    onClick = { vm.closeTab(i) },
+                    onClick = {
+                        // 有未保存修改时先弹确认框，否则直接关闭
+                        if (vm.isTabDirty(i)) pendingClose = i
+                        else vm.closeTab(i)
+                    },
                     modifier = Modifier.size(20.dp)
                 ) {
                     Icon(
@@ -451,6 +477,33 @@ private fun TabBar(vm: IDEViewModel) {
                 }
             }
         }
+    }
+
+    // 未保存退出的确认对话框：保存 / 不保存 / 取消
+    if (pendingClose != null) {
+        val idx = pendingClose!!
+        val name = openTabs.getOrNull(idx)?.name ?: ""
+        AlertDialog(
+            onDismissRequest = { pendingClose = null },
+            title = { Text("未保存的修改") },
+            text = { Text("“$name” 含有未保存的修改，是否保存后再关闭？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    vm.saveTab(idx)
+                    vm.closeTab(idx, save = false)
+                    pendingClose = null
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        vm.closeTab(idx, save = false)
+                        pendingClose = null
+                    }) { Text("不保存") }
+                    TextButton(onClick = { pendingClose = null }) { Text("取消") }
+                }
+            }
+        )
     }
 }
 
