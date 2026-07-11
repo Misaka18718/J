@@ -326,7 +326,7 @@ fun IDEScreen(vm: IDEViewModel) {
         SettingsScreen(
             vm = vm,
             onBack = { showSettings = false },
-            onTogglePublic = { on -> if (on) requestPublicDir() }
+            onTogglePublic = { on -> if (on) requestPublicDir() else vm.applyWorkingDir("private") }
         )
     }
 
