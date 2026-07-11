@@ -42,11 +42,12 @@ fun CodeEditorView(
                 }
 
                 // 监听文本变化，解析光标前的“词”作为片段查询
-                subscribeAlways<ContentChangeEvent> {
-                    if (vm.applyingSnippet) return@subscribeAlways
-                    val idx = SnippetEngine.caretIndex(this)
-                    val token = SnippetEngine.currentToken(text.toString(), idx)
-                    vm.setSnippetQuery(token)
+                subscribeAlways(ContentChangeEvent::class.java) {
+                    if (!vm.applyingSnippet) {
+                        val idx = SnippetEngine.caretIndex(this)
+                        val token = SnippetEngine.currentToken(text.toString(), idx)
+                        vm.setSnippetQuery(token)
+                    }
                 }
 
                 editorRef.value = this

@@ -97,7 +97,7 @@ private fun FileTreeNode(
                     editorRef.value?.text?.toString()?.let { vm.saveContent(it) }
                     vm.openFile(node.file)
                 }
-                .padding(start = (depth * 12 + 8).dp, vertical = 4.dp)
+                .padding(start = (depth * 12 + 8).dp, top = 4.dp, end = 0.dp, bottom = 4.dp)
                 .background(
                     if (selected) MaterialTheme.colorScheme.primaryContainer
                     else Color.Transparent,
