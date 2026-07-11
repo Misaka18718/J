@@ -196,7 +196,6 @@ private fun FileTreeNode(
                 .fillMaxWidth()
                 .combinedClickable(
                     onClick = {
-                        editorRef.value?.text?.toString()?.let { vm.saveContent(it) }
                         vm.openFile(node.file)
                     },
                     onLongClick = { onLongClick(node) }

@@ -36,20 +36,21 @@ fun CodeEditorView(
                 typefaceText = Typeface.MONOSPACE
                 setEditorLanguage(JavaLanguage())
 
-                // 初始加载当前文件
-                vm.currentFile.value?.let { f: File ->
-                    if (f.exists()) setText(f.readText())
-                }
+                // 初始加载当前激活标签页内容
+                val initContent = vm.activeTabContent()
+                if (initContent.isNotEmpty()) setText(initContent)
+                else vm.activeTabFile()?.takeIf { it.exists() }?.let { setText(it.readText()) }
 
-                // 监听文本变化，解析光标前的“词”作为片段查询
+                // 监听文本变化，解析光标前的“词”作为片段查询，并回写当前标签页
                 subscribeAlways(ContentChangeEvent::class.java) {
-                    if (!vm.applyingSnippet) {
-                        val idx = SnippetEngine.caretIndex(this)
-                        val token = SnippetEngine.currentToken(text.toString(), idx)
-                        vm.setSnippetQuery(token)
-                    }
                     vm.canUndo.value = this.text.canUndo()
                     vm.canRedo.value = this.text.canRedo()
+                    if (vm.loadingFile) return@subscribeAlways
+                    if (!vm.applyingSnippet) {
+                        val idx = SnippetEngine.caretIndex(this)
+                        vm.setSnippetQuery(SnippetEngine.currentToken(text.toString(), idx))
+                    }
+                    vm.updateActiveContent(text.toString())
                 }
 
                 editorRef.value = this
@@ -57,11 +58,16 @@ fun CodeEditorView(
         }
     )
 
-    // 切换文件时加载新内容
-    val file = vm.currentFile.value
-    LaunchedEffect(file?.absolutePath) {
-        file?.let { f: File ->
-            if (f.exists()) editorRef.value?.setText(f.readText())
-        }
+    // 切换标签页时加载对应内容（保留各标签内存文本，避免相互覆盖）
+    val activePath = vm.openTabs.value.getOrNull(vm.activeTab.value)?.absolutePath
+    LaunchedEffect(activePath) {
+        val ed = editorRef.value ?: return@LaunchedEffect
+        val content = vm.activeTabContent()
+        vm.loadingFile = true
+        ed.setUndoEnabled(false)
+        ed.setText(content)
+        ed.setUndoEnabled(true)
+        vm.loadingFile = false
+        vm.setSnippetQuery("")
     }
 }

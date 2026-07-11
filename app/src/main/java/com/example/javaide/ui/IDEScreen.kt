@@ -4,13 +4,19 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -36,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.example.javaide.IDEViewModel
 import com.example.javaide.Snippets
@@ -139,6 +146,8 @@ fun IDEScreen(vm: IDEViewModel) {
                         else Modifier.height(52.dp)
                     )
                 )
+                // 标签页栏：横向滚动，点击切换、× 关闭
+                TabBar(vm)
                 // 源代码：占约 2/3
                 Box(Modifier.fillMaxWidth().weight(2f)) {
                     CodeEditorView(vm, editorRef, Modifier.fillMaxSize())
@@ -216,5 +225,46 @@ fun IDEScreen(vm: IDEViewModel) {
                 TextButton(onClick = { showNewPkg = false }) { Text("取消") }
             }
         )
+    }
+}
+
+/** 顶部标签页栏：横向滚动，点击切换激活标签页，× 关闭对应标签页。 */
+@Composable
+private fun TabBar(vm: IDEViewModel) {
+    val openTabs = vm.openTabs.value
+    val activeTab = vm.activeTab.value
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .height(38.dp)
+    ) {
+        openTabs.forEachIndexed { i, file ->
+            val selected = i == activeTab
+            Row(
+                modifier = Modifier
+                    .clickable { vm.setActiveTab(i) }
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primaryContainer
+                        else Color.Transparent
+                    )
+                    .padding(horizontal = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(file.name, style = MaterialTheme.typography.labelSmall)
+                Spacer(Modifier.width(4.dp))
+                IconButton(
+                    onClick = { vm.closeTab(i) },
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "关闭标签页",
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
     }
 }
