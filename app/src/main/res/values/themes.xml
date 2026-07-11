@@ -1,0 +1,6 @@
+<resources>
+    <!-- Compose 工程使用的浅色无 ActionBar 主题 -->
+    <style name="Theme.JavaIDE" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+    </style>
+</resources>
