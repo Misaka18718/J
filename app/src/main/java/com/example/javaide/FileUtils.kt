@@ -11,7 +11,7 @@ object FileUtils {
     fun buildTree(dir: File): FileNode {
         val children = dir.listFiles()
             ?.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-            ?.map { f ->
+            ?.map { f: File ->
                 if (f.isDirectory) buildTree(f) else FileNode(f.name, f, false, emptyList())
             }
             ?: emptyList()

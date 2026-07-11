@@ -36,7 +36,7 @@ fun CodeEditorView(
                 setEditorLanguage(JavaLanguage())
 
                 // 初始加载当前文件
-                vm.currentFile.value?.let { f ->
+                vm.currentFile.value?.let { f: File ->
                     if (f.exists()) setText(f.readText())
                 }
 
@@ -56,7 +56,7 @@ fun CodeEditorView(
     // 切换文件时加载新内容
     val file = vm.currentFile.value
     LaunchedEffect(file?.absolutePath) {
-        file?.let { f ->
+        file?.let { f: File ->
             if (f.exists()) editorRef.value?.setText(f.readText())
         }
     }

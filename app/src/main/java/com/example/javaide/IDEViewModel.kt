@@ -65,7 +65,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun saveContent(text: String) {
-        currentFile.value?.let { f ->
+        currentFile.value?.let { f: File ->
             if (!f.exists()) f.parentFile?.mkdirs()
             f.writeText(text)
         }
@@ -116,7 +116,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             appendConsole(">>> 请先创建 src 目录\n")
             return
         }
-        currentFile.value?.let { f ->
+        currentFile.value?.let { f: File ->
             if (!f.exists()) f.parentFile?.mkdirs()
             f.writeText(sourceText)
         }
