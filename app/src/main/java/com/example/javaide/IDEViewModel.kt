@@ -8,7 +8,6 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiaoyv.java.compiler.JavaEngine
-import com.xiaoyv.java.compiler.JavaEngineSetting
 import com.xiaoyv.java.compiler.tools.exec.JavaProgramConsole
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
@@ -476,9 +475,6 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
      * 的 dex 路径始终有效。
      */
     private fun copyDexToPrivate(dexFile: File): File {
-        // 触发库内部优化缓存目录（filesDir/tmp/compiler）的创建，确保 DexClassLoader
-        // 运行期写入优化产物时该目录已存在且可写（应用私有目录）。
-        JavaEngineSetting().defaultCacheDir
         val privateDir = File(context.filesDir, "dexrun").apply { mkdirs() }
         val target = File(privateDir, "classes.dex")
         runCatching {
