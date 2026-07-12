@@ -13,8 +13,8 @@ android {
         // compiler-d8（ECJ + D8 安卓端 Java 编译引擎）的 manifest 要求 minSdk >= 24
         minSdk = 24
         targetSdk = 34
-        versionCode = 16
-        versionName = "3.2"
+        versionCode = 17
+        versionName = "3.3"
     }
 
     // 固定 debug 签名：仓库内提交 debug.keystore，CI 与本机均使用同一把密钥，

@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiaoyv.java.compiler.JavaEngine
+import com.xiaoyv.java.compiler.JavaEngineSetting
 import com.xiaoyv.java.compiler.tools.exec.JavaProgramConsole
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
@@ -465,26 +466,39 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 运行管线 ----------
     /**
-     * 将 dex 复制到应用私有目录（filesDir/dexrun/classes.dex）并返回该私有路径。
+     * 将 dex 复制到应用私有目录并返回该私有路径。
      *
-     * 原因：DexClassLoader 在运行期需要 `open()` 读取 dex。若原始 dex 位于外部存储
-     * （公共存储模式下为 /storage/emulated/0/<workspace>/out/dex/classes.dex），
-     * 即使编译期能写出，运行期在该路径上的读取也可能因权限/作用域存储而以
-     * “No such file or directory”(ENOENT) 失败。复制到应用私有目录后，运行期
-     * 只访问私有可写路径，彻底规避该问题，也确保传给 [com.xiaoyv.java.compiler.JavaEngine.javaProgram.run]
-     * 的 dex 路径始终有效。
+     * 关键修复点：库内部 [com.xiaoyv.java.compiler.tools.exec.JavaProgram.run] 用
+     * `DexClassLoader(dexFile.absolutePath, optimizedDirectory, ...)` 构造类加载器，
+     * 其中 `optimizedDirectory = JavaEngineSetting.defaultCacheDir`
+     * (= `GlobalUtils.getApp().filesDir + "/tmp/compiler"`)。
+     *
+     * 若我们复制出的 dex 与 optimizedDirectory 不在**同一个 filesDir 根路径**（典型情况：
+     * 一个被解析为 `/data/user/0/<pkg>/files/...`，另一个为 `/data/data/<pkg>/files/...`），
+     * 部分 Android 版本的 DexClassLoader 会因路径前缀不一致而抛出
+     * `No such file or directory`(ENOENT)。
+     *
+     * 因此这里以**库所使用的同一 filesDir 根**（`JavaEngineSetting.defaultCacheDir` 的父目录，
+     * 即 `GlobalUtils.getApp().filesDir`）为基准存放 dex，彻底消除前缀混用问题。
      */
     private fun copyDexToPrivate(dexFile: File): File {
-        val privateDir = File(context.filesDir, "dexrun").apply { mkdirs() }
-        val target = File(privateDir, "classes.dex")
+        // 与库内部 optimizedDirectory 同源的 filesDir 根（避免 /data/user/0 与 /data/data 混用）
+        val baseDir = File(JavaEngineSetting.defaultCacheDir).parentFile ?: context.filesDir
+        val privateDir = File(baseDir, "dexrun").apply { mkdirs() }
+        val target = File(privateDir, dexFile.name)
+        appendConsole(">>> Dex 源路径：${dexFile.absolutePath}\n")
+        appendConsole(">>> filesDir 根：${baseDir.absolutePath}\n")
+        appendConsole(">>> 优化目录  ：${JavaEngineSetting.defaultCacheDir}\n")
         runCatching {
             dexFile.inputStream().use { input ->
                 target.outputStream().use { out -> input.copyTo(out) }
             }
         }.onFailure {
             // 复制失败时退回到原始 dex（例如原始 dex 本来就位于私有目录）
+            appendConsole("⚠ 复制 Dex 失败（已回退原始路径）：${it.message}\n")
             return dexFile
         }
+        appendConsole(">>> Dex 复制 → ${target.absolutePath}\n")
         return target
     }
 
@@ -511,6 +525,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val dex = JavaEngine.dexCompiler.compile(jar, outDir)
                 // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
                 val runDex = copyDexToPrivate(dex)
+                appendConsole(">>> 运行 Dex：${runDex.absolutePath}\n")
                 appendConsole(">>> 运行中：\n")
                 val consoleHandle = JavaEngine.javaProgram.run(
                     runDex,
@@ -544,6 +559,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val dex = JavaEngine.dexCompiler.compile(jarFile, outDir)
                 // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
                 val runDex = copyDexToPrivate(dex)
+                appendConsole(">>> 运行 Dex：${runDex.absolutePath}\n")
                 appendConsole(">>> 运行中：\n")
                 val consoleHandle = JavaEngine.javaProgram.run(
                     runDex,
