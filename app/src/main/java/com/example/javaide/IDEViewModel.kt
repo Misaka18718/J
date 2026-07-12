@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiaoyv.java.compiler.JavaEngine
+import com.xiaoyv.java.compiler.JavaEngineSetting
 import com.xiaoyv.java.compiler.tools.exec.JavaProgramConsole
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
@@ -464,6 +465,33 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- 运行管线 ----------
+    /**
+     * 将 dex 复制到应用私有目录（filesDir/dexrun/classes.dex）并返回该私有路径。
+     *
+     * 原因：DexClassLoader 在运行期需要 `open()` 读取 dex。若原始 dex 位于外部存储
+     * （公共存储模式下为 /storage/emulated/0/<workspace>/out/dex/classes.dex），
+     * 即使编译期能写出，运行期在该路径上的读取也可能因权限/作用域存储而以
+     * “No such file or directory”(ENOENT) 失败。复制到应用私有目录后，运行期
+     * 只访问私有可写路径，彻底规避该问题，也确保传给 [com.xiaoyv.java.compiler.JavaEngine.javaProgram.run]
+     * 的 dex 路径始终有效。
+     */
+    private fun copyDexToPrivate(dexFile: File): File {
+        // 触发库内部优化缓存目录（filesDir/tmp/compiler）的创建，确保 DexClassLoader
+        // 运行期写入优化产物时该目录已存在且可写（应用私有目录）。
+        JavaEngineSetting().defaultCacheDir
+        val privateDir = File(context.filesDir, "dexrun").apply { mkdirs() }
+        val target = File(privateDir, "classes.dex")
+        runCatching {
+            dexFile.inputStream().use { input ->
+                target.outputStream().use { out -> input.copyTo(out) }
+            }
+        }.onFailure {
+            // 复制失败时退回到原始 dex（例如原始 dex 本来就位于私有目录）
+            return dexFile
+        }
+        return target
+    }
+
     fun runCode(sourceText: String) {
         val srcRoot = File(projectDir, "src")
         if (!srcRoot.exists()) {
@@ -485,9 +513,11 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 appendConsole(">>> 编译成功：${jar.name}\n")
                 appendConsole(">>> 转换为 Dex...\n")
                 val dex = JavaEngine.dexCompiler.compile(jar, outDir)
+                // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
+                val runDex = copyDexToPrivate(dex)
                 appendConsole(">>> 运行中：\n")
                 val consoleHandle = JavaEngine.javaProgram.run(
-                    dex,
+                    runDex,
                     emptyArray<String>(),
                     chooseMainClassToRun = chooseEntryClass(),
                     printOut = { appendConsole(it.toString()) },
@@ -516,9 +546,11 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val outDir = File(projectDir, "out").apply { mkdirs() }
                 val dex = JavaEngine.dexCompiler.compile(jarFile, outDir)
+                // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
+                val runDex = copyDexToPrivate(dex)
                 appendConsole(">>> 运行中：\n")
                 val consoleHandle = JavaEngine.javaProgram.run(
-                    dex,
+                    runDex,
                     emptyArray<String>(),
                     chooseMainClassToRun = chooseEntryClass(),
                     printOut = { appendConsole(it.toString()) },
