@@ -159,6 +159,24 @@ fun IDEScreen(vm: IDEViewModel) {
         }
     }
 
+    // JAR 文件选择器（v3.0：运行外部 .jar）
+    val jarPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val name = uri.lastPathSegment ?: "temp.jar"
+                val tmp = File(context.cacheDir, "jar_run_$name")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    tmp.outputStream().use { output -> input.copyTo(output) }
+                }
+                vm.runJar(tmp.absolutePath)
+            } catch (e: Exception) {
+                vm.appendConsole(">>> 无法读取 JAR 文件：${e.message}\n")
+            }
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         Scaffold(
             topBar = {
@@ -235,6 +253,10 @@ fun IDEScreen(vm: IDEViewModel) {
                             DropdownMenuItem(
                                 text = { Text("打包 JAR") },
                                 onClick = { menuOpen = false; showJar = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("运行 .jar") },
+                                onClick = { menuOpen = false; jarPickerLauncher.launch(arrayOf("*/*")) }
                             )
                             DropdownMenuItem(
                                 text = { Text("清空控制台") },
@@ -465,6 +487,31 @@ fun IDEScreen(vm: IDEViewModel) {
             },
             dismissButton = {
                 TextButton(onClick = { showJar = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // 多 main 主类选择器（v3.0：库检测到多个入口类时弹出）
+    val chooseReq = vm.chooseMainClass.value
+    if (chooseReq != null) {
+        AlertDialog(
+            onDismissRequest = { chooseReq.onCancel() },
+            title = { Text("选择入口类") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    chooseReq.classes.forEach { cls ->
+                        TextButton(
+                            onClick = { chooseReq.onChoose(cls) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(cls, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            },
+            confirmButton = { },
+            dismissButton = {
+                TextButton(onClick = { chooseReq.onCancel() }) { Text("取消") }
             }
         )
     }

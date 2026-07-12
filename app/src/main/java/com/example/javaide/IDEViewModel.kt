@@ -64,10 +64,18 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     val expandedDirs =
         androidx.compose.runtime.mutableStateOf<Set<String>>(emptySet())
 
-    /** Toast 提示流：UI 侧收集后弹出，用于“创建 src/out/保存”等操作的明确用户反馈。 */
+    /** Toast 提示流：UI 侧收集后弹出，用于"创建 src/out/保存"等操作的明确用户反馈。 */
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast = _toast.asSharedFlow()
     private fun toast(msg: String) { _toast.tryEmit(msg) }
+
+    /** 多 main 主类选择器（v3.0）：library 回调中设置，UI 弹窗选择后复原。 */
+    data class ChooseMainClassRequest(
+        val classes: List<String>,
+        val onChoose: (String) -> Unit,
+        val onCancel: () -> Unit
+    )
+    val chooseMainClass = androidx.compose.runtime.mutableStateOf<ChooseMainClassRequest?>(null)
 
     /** 新建文件后期望的光标位置（char index）；-1 表示不定位。由编辑器在加载内容后消费。 */
     val pendingCursorIndex = androidx.compose.runtime.mutableStateOf(-1)
@@ -436,12 +444,64 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = JavaEngine.javaProgram.run(
                     dex,
                     emptyArray<String>(),
+                    chooseMainClassToRun = { classes, continuation ->
+                        if (classes.size <= 1) {
+                            continuation.resume(classes.firstOrNull() ?: "")
+                        } else {
+                            chooseMainClass.value = ChooseMainClassRequest(
+                                classes = classes,
+                                onChoose = { c -> continuation.resume(c); chooseMainClass.value = null },
+                                onCancel = { continuation.resumeWithException(Exception("用户取消")); chooseMainClass.value = null }
+                            )
+                        }
+                    },
                     printOut = { appendConsole(it.toString()) },
                     printErr = { appendConsole(it.toString()) }
                 )
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
                 appendConsole("\n>>> 运行失败：\n${e.message}\n")
+            } finally {
+                isRunning.value = false
+            }
+        }
+    }
+
+    /** 运行外部 .jar 文件：Dex 化后执行（不经过 javac 编译）。 */
+    fun runJar(jarPath: String) {
+        val jarFile = File(jarPath)
+        if (!jarFile.exists()) {
+            appendConsole(">>> JAR 文件不存在：$jarPath\n")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            isRunning.value = true
+            consoleExpanded.value = true
+            appendConsole("\n>>> 转换 JAR 为 Dex：${jarFile.name}\n")
+            try {
+                val outDir = File(projectDir, "out").apply { mkdirs() }
+                val dex = JavaEngine.dexCompiler.compile(jarFile, outDir)
+                appendConsole(">>> 运行中：\n")
+                val consoleHandle = JavaEngine.javaProgram.run(
+                    dex,
+                    emptyArray<String>(),
+                    chooseMainClassToRun = { classes, continuation ->
+                        if (classes.size <= 1) {
+                            continuation.resume(classes.firstOrNull() ?: "")
+                        } else {
+                            chooseMainClass.value = ChooseMainClassRequest(
+                                classes = classes,
+                                onChoose = { c -> continuation.resume(c); chooseMainClass.value = null },
+                                onCancel = { continuation.resumeWithException(Exception("用户取消")); chooseMainClass.value = null }
+                            )
+                        }
+                    },
+                    printOut = { appendConsole(it.toString()) },
+                    printErr = { appendConsole(it.toString()) }
+                )
+                programConsole.value = consoleHandle
+            } catch (e: Throwable) {
+                appendConsole("\n>>> 运行 JAR 失败：\n${e.message}\n")
             } finally {
                 isRunning.value = false
             }
