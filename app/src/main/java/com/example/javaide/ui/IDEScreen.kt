@@ -491,17 +491,17 @@ fun IDEScreen(vm: IDEViewModel) {
         )
     }
 
-    // 多 main 主类选择器（v3.0：库检测到多个入口类时弹出）
-    val chooseReq = vm.chooseMainClass.value
-    if (chooseReq != null) {
+    // 多 main 主类选择器（v3.0 增强：用户可从多个入口类中真正选择要运行的类）
+    val mainChoices = vm.mainClassChoices.value
+    if (mainChoices != null) {
         AlertDialog(
-            onDismissRequest = { chooseReq.onCancel() },
+            onDismissRequest = { vm.cancelMainClass() },
             title = { Text("选择入口类") },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    chooseReq.classes.forEach { cls ->
+                    mainChoices.forEach { cls ->
                         TextButton(
-                            onClick = { chooseReq.onChoose(cls) },
+                            onClick = { vm.chooseMainClass(cls) },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(cls, style = MaterialTheme.typography.bodyMedium)
@@ -511,7 +511,7 @@ fun IDEScreen(vm: IDEViewModel) {
             },
             confirmButton = { },
             dismissButton = {
-                TextButton(onClick = { chooseReq.onCancel() }) { Text("取消") }
+                TextButton(onClick = { vm.cancelMainClass() }) { Text("取消") }
             }
         )
     }

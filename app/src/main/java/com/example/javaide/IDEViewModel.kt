@@ -9,6 +9,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiaoyv.java.compiler.JavaEngine
 import com.xiaoyv.java.compiler.tools.exec.JavaProgramConsole
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -17,6 +18,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -69,13 +72,55 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     val toast = _toast.asSharedFlow()
     private fun toast(msg: String) { _toast.tryEmit(msg) }
 
-    /** 多 main 主类选择器（v3.0）：library 回调中设置，UI 弹窗选择后复原。 */
-    data class ChooseMainClassRequest(
-        val classes: List<String>,
-        val onChoose: (String) -> Unit,
-        val onCancel: () -> Unit
-    )
-    val chooseMainClass = androidx.compose.runtime.mutableStateOf<ChooseMainClassRequest?>(null)
+    /**
+     * 运行时入口类选择（v3.0 增强）。
+     *
+     * 库的 [com.xiaoyv.java.compiler.tools.exec.JavaProgram.run] 在检测到入口类后，
+     * 会在 Dispatchers.Main 上调用 `chooseMainClassToRun(classes, continuation)` 并挂起协程，
+     * 等待我们 `continuation.resume(选中的类)`。
+     *
+     * - 只有 1 个入口类：直接 resume，无需弹窗。
+     * - 有 ≥2 个入口类：把候选类名交给 [mainClassChoices] 驱动弹窗，并把协程
+     *   [pendingMainContinuation] 暂存；用户在弹窗中选择后调用 [chooseMainClass] 恢复协程，
+     *   真正运行所选入口（而非库默认的“第一个 main”）。
+     */
+    /** 弹窗数据源：非空时 IDEScreen 弹出“选择入口类”对话框。 */
+    val mainClassChoices = androidx.compose.runtime.mutableStateOf<List<String>?>(null)
+    /** 被挂起的协程 continuation（仅库回调内部使用，不暴露给 UI）。 */
+    private var pendingMainContinuation: CancellableContinuation<String>? = null
+
+    /** 用户在弹窗中确认运行某个入口类。 */
+    fun chooseMainClass(cls: String) {
+        mainClassChoices.value = null
+        pendingMainContinuation?.let { if (it.isActive) it.resume(cls) }
+        pendingMainContinuation = null
+    }
+
+    /** 用户取消入口类选择。 */
+    fun cancelMainClass() {
+        mainClassChoices.value = null
+        pendingMainContinuation?.let { if (it.isActive) it.cancel() }
+        pendingMainContinuation = null
+    }
+
+    /**
+     * 构造传给 [com.xiaoyv.java.compiler.JavaEngine.javaProgram.run] 的入口类选择回调。
+     * 显式标注参数类型以匹配库的真实签名 `((List<String>, CancellableContinuation<String>) -> Unit)`，
+     * 避免 Kotlin 因类型推断失败而无法解析 `resume` / `resumeWithException`。
+     */
+    private fun chooseEntryClass(): (List<String>, CancellableContinuation<String>) -> Unit =
+        { classes: List<String>, cont: CancellableContinuation<String> ->
+            when {
+                classes.isEmpty() -> cont.resumeWithException(
+                    RuntimeException("未找到包含 main(String[] args) 方法的可执行类")
+                )
+                classes.size == 1 -> cont.resume(classes.first())
+                else -> {
+                    pendingMainContinuation = cont
+                    mainClassChoices.value = classes
+                }
+            }
+        }
 
     /** 新建文件后期望的光标位置（char index）；-1 表示不定位。由编辑器在加载内容后消费。 */
     val pendingCursorIndex = androidx.compose.runtime.mutableStateOf(-1)
@@ -419,20 +464,6 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- 运行管线 ----------
-    /** 扫描 src/ 下所有 .java 文件，找出含 main 方法的全限定类名。 */
-    fun findMainClasses(): List<String> {
-        val src = File(projectDir, "src")
-        val mainRegex = Regex("""public\s+static\s+void\s+main\s*\(\s*String""")
-        val result = mutableListOf<String>()
-        src.walkTopDown().filter { it.extension == "java" }.forEach { f ->
-            if (f.readText().contains(mainRegex)) {
-                val rel = f.relativeTo(src).path.removeSuffix(".java").replace(File.separatorChar, '.')
-                result.add(rel)
-            }
-        }
-        return result
-    }
-
     fun runCode(sourceText: String) {
         val srcRoot = File(projectDir, "src")
         if (!srcRoot.exists()) {
@@ -442,16 +473,6 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         currentFile.value?.let { f: File ->
             if (!f.exists()) f.parentFile?.mkdirs()
             f.writeText(sourceText)
-        }
-
-        // 多 main 检测：扫描源码找出所有入口类（≥2 个时弹框提示）
-        val mains = findMainClasses()
-        if (mains.size >= 2) {
-            chooseMainClass.value = ChooseMainClassRequest(
-                classes = mains,
-                onChoose = { chooseMainClass.value = null },
-                onCancel = { chooseMainClass.value = null }
-            )
         }
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -468,6 +489,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = JavaEngine.javaProgram.run(
                     dex,
                     emptyArray<String>(),
+                    chooseMainClassToRun = chooseEntryClass(),
                     printOut = { appendConsole(it.toString()) },
                     printErr = { appendConsole(it.toString()) }
                 )
@@ -498,6 +520,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = JavaEngine.javaProgram.run(
                     dex,
                     emptyArray<String>(),
+                    chooseMainClassToRun = chooseEntryClass(),
                     printOut = { appendConsole(it.toString()) },
                     printErr = { appendConsole(it.toString()) }
                 )
