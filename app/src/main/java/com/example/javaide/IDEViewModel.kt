@@ -419,6 +419,20 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- 运行管线 ----------
+    /** 扫描 src/ 下所有 .java 文件，找出含 main 方法的全限定类名。 */
+    fun findMainClasses(): List<String> {
+        val src = File(projectDir, "src")
+        val mainRegex = Regex("""public\s+static\s+void\s+main\s*\(\s*String""")
+        val result = mutableListOf<String>()
+        src.walkTopDown().filter { it.extension == "java" }.forEach { f ->
+            if (f.readText().contains(mainRegex)) {
+                val rel = f.relativeTo(src).path.removeSuffix(".java").replace(File.separatorChar, '.')
+                result.add(rel)
+            }
+        }
+        return result
+    }
+
     fun runCode(sourceText: String) {
         val srcRoot = File(projectDir, "src")
         if (!srcRoot.exists()) {
@@ -428,6 +442,16 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         currentFile.value?.let { f: File ->
             if (!f.exists()) f.parentFile?.mkdirs()
             f.writeText(sourceText)
+        }
+
+        // 多 main 检测：扫描源码找出所有入口类（≥2 个时弹框提示）
+        val mains = findMainClasses()
+        if (mains.size >= 2) {
+            chooseMainClass.value = ChooseMainClassRequest(
+                classes = mains,
+                onChoose = { chooseMainClass.value = null },
+                onCancel = { chooseMainClass.value = null }
+            )
         }
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -444,17 +468,6 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = JavaEngine.javaProgram.run(
                     dex,
                     emptyArray<String>(),
-                    chooseMainClassToRun = { classes: List<String>, continuation: kotlinx.coroutines.CancellableContinuation<String> ->
-                        if (classes.size <= 1) {
-                            continuation.resume(classes.firstOrNull() ?: "")
-                        } else {
-                            chooseMainClass.value = ChooseMainClassRequest(
-                                classes = classes,
-                                onChoose = { c -> continuation.resume(c); chooseMainClass.value = null },
-                                onCancel = { continuation.resumeWithException(Exception("用户取消")); chooseMainClass.value = null }
-                            )
-                        }
-                    },
                     printOut = { appendConsole(it.toString()) },
                     printErr = { appendConsole(it.toString()) }
                 )
@@ -485,17 +498,6 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = JavaEngine.javaProgram.run(
                     dex,
                     emptyArray<String>(),
-                    chooseMainClassToRun = { classes: List<String>, continuation: kotlinx.coroutines.CancellableContinuation<String> ->
-                        if (classes.size <= 1) {
-                            continuation.resume(classes.firstOrNull() ?: "")
-                        } else {
-                            chooseMainClass.value = ChooseMainClassRequest(
-                                classes = classes,
-                                onChoose = { c -> continuation.resume(c); chooseMainClass.value = null },
-                                onCancel = { continuation.resumeWithException(Exception("用户取消")); chooseMainClass.value = null }
-                            )
-                        }
-                    },
                     printOut = { appendConsole(it.toString()) },
                     printErr = { appendConsole(it.toString()) }
                 )
