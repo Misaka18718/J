@@ -500,12 +500,13 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
      * 并把 dex 与优化目录都落到 canonical 后的 `/data/data/<pkg>/...` 真实路径。
      */
     private fun copyDexToPrivate(dexFile: File): File {
-        // canonicalPath 解析 /data/user/0 -> /data/data，规避符号链接导致的 ENOENT
-        val baseDir = File(context.filesDir.canonicalPath)
+        // 落到 codeCacheDir（Android 指定的代码缓存区，SELinux 标签最稳妥，专为承载 dex 设计），
+        // 不再放 filesDir 下自建子目录（部分 ROM 对 files 子目录的 dex 读取会因标签问题 ENOENT）。
+        val baseDir = File(context.codeCacheDir.canonicalPath)
         val privateDir = File(baseDir, "dexrun").apply { mkdirs() }
         val target = File(privateDir, dexFile.name)
         appendConsole(">>> Dex 源路径：${dexFile.absolutePath}\n")
-        appendConsole(">>> Dex canonical：${target.canonicalPath}\n")
+        appendConsole(">>> Dex 源 exists=${dexFile.exists()} canRead=${dexFile.canRead()} length=${dexFile.length()}\n")
         runCatching {
             dexFile.inputStream().use { input ->
                 target.outputStream().use { out -> input.copyTo(out) }
@@ -515,7 +516,15 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             appendConsole("⚠ 复制 Dex 失败（已回退原始路径）：${it.message}\n")
             return dexFile
         }
+        // 校验 dex 魔数（前 4 字节应为 "dex\n"），确认复制得到的是合法 dex 而非空文件/损坏内容
+        val magic = ByteArray(4)
+        val n = runCatching { target.inputStream().use { it.read(magic) } }.getOrElse { -1 }
+        val magicOk = n == 4 &&
+                magic[0] == 'd'.code.toByte() && magic[1] == 'e'.code.toByte() &&
+                magic[2] == 'x'.code.toByte() && magic[3] == '\n'.code.toByte()
         appendConsole(">>> Dex 复制 → ${target.canonicalPath}\n")
+        appendConsole(">>> Dex 大小=${target.length()} 魔数有效=${magicOk}\n")
+        if (!magicOk) appendConsole("⚠ 警告：dex 魔数无效，可能不是合法 dex 文件\n")
         return target
     }
 
@@ -529,31 +538,66 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
      */
     private suspend fun runDexDirectly(dexFile: File, args: Array<String>): RunHandle {
         val mainClasses = JavaProgramHelper.queryMainFunctionList(dexFile)
-        Log.d("JavaIDE", "Dex file absolute path: ${dexFile.absolutePath}")
-        Log.d("JavaIDE", "Dex file canonical path: ${dexFile.canonicalPath}")
-        Log.d("JavaIDE", "Dex file exists: ${dexFile.exists()}, canRead: ${dexFile.canRead()}")
+
+        // ===== 诊断日志（你要求的 dex 可读性 / 优化目录权限，全部输出到 logcat + 控制台）=====
+        val optDir = File(context.codeCacheDir.canonicalPath, "optimized").apply { mkdirs() }
+        Log.d("JavaIDE", "Dex absolute  : ${dexFile.absolutePath}")
+        Log.d("JavaIDE", "Dex canonical : ${dexFile.canonicalPath}")
+        Log.d("JavaIDE", "Dex exists    : ${dexFile.exists()}")
+        Log.d("JavaIDE", "Dex canRead   : ${dexFile.canRead()}")
+        Log.d("JavaIDE", "Dex canWrite  : ${dexFile.canWrite()}")
+        Log.d("JavaIDE", "Dex length    : ${dexFile.length()}")
+        Log.d("JavaIDE", "Dex parent    : ${dexFile.parentFile?.absolutePath} exists=${dexFile.parentFile?.exists()}")
+        Log.d("JavaIDE", "OptDir absolute: ${optDir.absolutePath}")
+        Log.d("JavaIDE", "OptDir exists  : ${optDir.exists()}")
+        Log.d("JavaIDE", "OptDir canWrite: ${optDir.canWrite()}")
+        appendConsole(">>> Dex exists=${dexFile.exists()} canRead=${dexFile.canRead()} length=${dexFile.length()}\n")
+        appendConsole(">>> 优化目录：${optDir.absolutePath} exists=${optDir.exists()} canWrite=${optDir.canWrite()}\n")
+
         val mainClass = withContext(Dispatchers.Main) {
             suspendCancellableCoroutine<String> { cont ->
                 chooseEntryClass().invoke(mainClasses, cont)
             }
         }
 
-        // 关键：canonical 路径 + 应用私有优化目录（/data/data/<pkg>/files/optimized）
-        val dexPath = dexFile.canonicalPath
-        val optimizedDir = File(context.filesDir.canonicalPath, "optimized").apply { mkdirs() }
-        Log.d("JavaIDE", "optimizedDir: ${optimizedDir.absolutePath}, exists: ${optimizedDir.exists()}, canWrite: ${optimizedDir.canWrite()}")
-        appendConsole(">>> 运行 Dex(canonical)：$dexPath\n")
-        appendConsole(">>> 优化目录(canonical)：${optimizedDir.absolutePath}\n")
+        // 先尝试直接用裸 .dex 路径加载；若失败（部分 ROM 对裸 .dex 敏感会 ENOENT），
+        // 把 dex 重新打包成 .jar（entry=classes.dex）再加载。
+        val method = try {
+            loadMainMethod(dexFile.canonicalPath, optDir.absolutePath, mainClass)
+        } catch (e: Throwable) {
+            Log.w("JavaIDE", "裸 .dex 加载失败，回退 jar 包装", e)
+            appendConsole(">>> 裸 dex 加载失败（${e.message}），改用 jar 包装重试\n")
+            val jar = dexToJar(dexFile)
+            loadMainMethod(jar.canonicalPath, optDir.absolutePath, mainClass)
+        }
+        appendConsole(">>> 运行中：\n")
+        return DexRunHandle(method, args)
+    }
 
+    /** 用 DexClassLoader 加载 dex/jar 并取出 main 方法。 */
+    private fun loadMainMethod(dexPath: String, optDir: String, mainClass: String): Method {
         val classLoader = DexClassLoader(
             dexPath,
-            optimizedDir.absolutePath,
+            optDir,
             null,
             ClassLoader.getSystemClassLoader()
         )
         val clazz = classLoader.loadClass(mainClass)
-        val method = clazz.getDeclaredMethod("main", Array<String>::class.java)
-        return DexRunHandle(method, args)
+        return clazz.getDeclaredMethod("main", Array<String>::class.java)
+    }
+
+    /** 把裸 .dex 重新打包成 .jar（entry=classes.dex），放到 codeCacheDir/jarwrap/，规避部分 ROM 对裸 .dex 的 ENOENT。 */
+    private fun dexToJar(dexFile: File): File {
+        val out = File(File(context.codeCacheDir.canonicalPath, "jarwrap"), "classes.jar").apply {
+            parentFile?.mkdirs()
+        }
+        JarOutputStream(out.outputStream()).use { jos ->
+            jos.putNextEntry(JarEntry("classes.dex"))
+            dexFile.inputStream().use { it.copyTo(jos) }
+            jos.closeEntry()
+        }
+        Log.d("JavaIDE", "dex wrapped to jar: ${out.absolutePath} length=${out.length()}")
+        return out
     }
 
     /**
@@ -638,7 +682,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = runDexDirectly(runDex, emptyArray())
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
-                appendConsole("\n>>> 运行失败：\n${e.message}\n")
+                Log.e("JavaIDE", "运行失败", e)
+                appendConsole("\n>>> 运行失败：\n${e.stackTraceToString()}\n")
             } finally {
                 isRunning.value = false
             }
@@ -648,8 +693,14 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     /** 运行外部 .jar 文件：Dex 化后执行（不经过 javac 编译）。 */
     fun runJar(jarPath: String) {
         val jarFile = File(jarPath)
-        if (!jarFile.exists()) {
-            appendConsole(">>> JAR 文件不存在：$jarPath\n")
+        appendConsole(">>> JAR 路径：$jarPath exists=${jarFile.exists()} length=${jarFile.length()}\n")
+        if (!jarFile.exists() || jarFile.length() == 0L) {
+            appendConsole(">>> JAR 文件不存在或为空：$jarPath\n")
+            return
+        }
+        // 校验是否为合法 jar：d8 对损坏/invalid 的 jar 只会笼统报 "Compilation failed to complete"
+        runCatching { JarFile(jarFile) }.onFailure {
+            appendConsole(">>> JAR 文件无效（无法作为 jar 打开）：${it.message}\n")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
@@ -659,13 +710,12 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val outDir = File(projectDir, "out").apply { mkdirs() }
                 val dex = JavaEngine.dexCompiler.compile(jarFile, outDir)
-                // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
                 val runDex = copyDexToPrivate(dex)
-                appendConsole(">>> 运行中：\n")
                 val consoleHandle = runDexDirectly(runDex, emptyArray())
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
-                appendConsole("\n>>> 运行 JAR 失败：\n${e.message}\n")
+                Log.e("JavaIDE", "运行 JAR 失败", e)
+                appendConsole("\n>>> 运行 JAR 失败：\n${e.stackTraceToString()}\n")
             } finally {
                 isRunning.value = false
             }
