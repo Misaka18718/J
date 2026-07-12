@@ -444,14 +444,14 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = JavaEngine.javaProgram.run(
                     dex,
                     emptyArray<String>(),
-                    chooseMainClassToRun = { classes, onCancellation, continuation ->
+                    chooseMainClassToRun = { classes: List<String>, continuation: kotlinx.coroutines.CancellableContinuation<String> ->
                         if (classes.size <= 1) {
                             continuation.resume(classes.firstOrNull() ?: "")
                         } else {
                             chooseMainClass.value = ChooseMainClassRequest(
                                 classes = classes,
                                 onChoose = { c -> continuation.resume(c); chooseMainClass.value = null },
-                                onCancel = { onCancellation(null); chooseMainClass.value = null }
+                                onCancel = { continuation.resumeWithException(Exception("用户取消")); chooseMainClass.value = null }
                             )
                         }
                     },
@@ -485,14 +485,14 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = JavaEngine.javaProgram.run(
                     dex,
                     emptyArray<String>(),
-                    chooseMainClassToRun = { classes, onCancellation, continuation ->
+                    chooseMainClassToRun = { classes: List<String>, continuation: kotlinx.coroutines.CancellableContinuation<String> ->
                         if (classes.size <= 1) {
                             continuation.resume(classes.firstOrNull() ?: "")
                         } else {
                             chooseMainClass.value = ChooseMainClassRequest(
                                 classes = classes,
                                 onChoose = { c -> continuation.resume(c); chooseMainClass.value = null },
-                                onCancel = { onCancellation(null); chooseMainClass.value = null }
+                                onCancel = { continuation.resumeWithException(Exception("用户取消")); chooseMainClass.value = null }
                             )
                         }
                     },
