@@ -165,7 +165,12 @@ fun IDEScreen(vm: IDEViewModel) {
     ) { uri ->
         if (uri != null) {
             try {
-                val name = uri.lastPathSegment ?: "temp.jar"
+                // 文档 URI 的 lastPathSegment 可能形如 "primary:JavaIDE_Workspace/jars/VirtualMachine.jar"，
+                // 其中的 ':' 与 '/' 不能直接用作文件名，否则会拼出非法路径（jar_run_primary:...）。
+                val rawName = uri.lastPathSegment ?: "temp.jar"
+                val name = rawName.substringAfterLast('/').let {
+                    if (it.isBlank() || it.contains(':')) "temp.jar" else it
+                }
                 val tmp = File(context.cacheDir, "jar_run_$name")
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     tmp.outputStream().use { output -> input.copyTo(output) }

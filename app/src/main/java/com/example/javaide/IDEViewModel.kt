@@ -8,11 +8,21 @@ import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.xiaoyv.java.compiler.JavaEngine
-import com.xiaoyv.java.compiler.JavaEngineSetting
-import com.xiaoyv.java.compiler.tools.exec.JavaProgramConsole
+import com.xiaoyv.java.compiler.tools.exec.JavaProgramHelper
+import android.util.Log
+import dalvik.system.DexClassLoader
+import java.io.OutputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
+import java.io.PrintStream
+import java.lang.reflect.Method
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +40,19 @@ import java.util.jar.JarOutputStream
 import java.util.jar.Manifest
 import kotlin.concurrent.withLock
 import java.util.concurrent.locks.ReentrantLock
+
+/**
+ * 运行句柄：v3.4 起，[IDEViewModel] 不再依赖 compiler-d8 的 [com.xiaoyv.java.compiler.tools.exec.JavaProgram.run]
+ * （其内部 hardcode `optimizedDirectory = JavaEngineSetting.defaultCacheDir`，在本机会解析为
+ * `/data/user/0/...` 符号链接形式，导致 DexClassLoader 构造即抛 `No such file or directory`）。
+ * 改为自建 DexClassLoader 运行器，完全掌控路径与优化目录。
+ */
+interface RunHandle {
+    /** 写入标准输入（供 Scanner / BufferedReader 等读取）。 */
+    fun inputStdin(text: String)
+    /** 停止程序并恢复 System 标准流。 */
+    fun close()
+}
 
 class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -64,7 +87,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     val treeOpen = androidx.compose.runtime.mutableStateOf(true)
     val snippetQuery = androidx.compose.runtime.mutableStateOf("")
     val programConsole =
-        androidx.compose.runtime.mutableStateOf<JavaProgramConsole?>(null)
+        androidx.compose.runtime.mutableStateOf<RunHandle?>(null)
     val expandedDirs =
         androidx.compose.runtime.mutableStateOf<Set<String>>(emptySet())
 
@@ -105,8 +128,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 构造传给 [com.xiaoyv.java.compiler.JavaEngine.javaProgram.run] 的入口类选择回调。
-     * 显式标注参数类型以匹配库的真实签名 `((List<String>, CancellableContinuation<String>) -> Unit)`，
+     * 构造入口类选择回调，供 [runDexDirectly] 在查询到主类后选择运行哪一个。
+     * 显式标注参数类型以匹配 `((List<String>, CancellableContinuation<String>) -> Unit)`，
      * 避免 Kotlin 因类型推断失败而无法解析 `resume` / `resumeWithException`。
      */
     private fun chooseEntryClass(): (List<String>, CancellableContinuation<String>) -> Unit =
@@ -466,29 +489,23 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 运行管线 ----------
     /**
-     * 将 dex 复制到应用私有目录并返回该私有路径。
+     * 将 dex 复制到应用私有目录并返回该私有路径（使用 canonicalPath，彻底解析 /data/user/0 符号链接）。
      *
-     * 关键修复点：库内部 [com.xiaoyv.java.compiler.tools.exec.JavaProgram.run] 用
-     * `DexClassLoader(dexFile.absolutePath, optimizedDirectory, ...)` 构造类加载器，
-     * 其中 `optimizedDirectory = JavaEngineSetting.defaultCacheDir`
-     * (= `GlobalUtils.getApp().filesDir + "/tmp/compiler"`)。
+     * v3.4 根因：compiler-d8 的 [com.xiaoyv.java.compiler.tools.exec.JavaProgram.run] 内部
+     * hardcode `optimizedDirectory = JavaEngineSetting.defaultCacheDir`
+     * (= `GlobalUtils.getApp().filesDir + "/tmp/compiler"`)，在本机会解析为 `/data/user/0/<pkg>/...`
+     * 符号链接形式；DexClassLoader 在该形式下构造即抛 `No such file or directory`(ENOENT)。
      *
-     * 若我们复制出的 dex 与 optimizedDirectory 不在**同一个 filesDir 根路径**（典型情况：
-     * 一个被解析为 `/data/user/0/<pkg>/files/...`，另一个为 `/data/data/<pkg>/files/...`），
-     * 部分 Android 版本的 DexClassLoader 会因路径前缀不一致而抛出
-     * `No such file or directory`(ENOENT)。
-     *
-     * 因此这里以**库所使用的同一 filesDir 根**（`JavaEngineSetting.defaultCacheDir` 的父目录，
-     * 即 `GlobalUtils.getApp().filesDir`）为基准存放 dex，彻底消除前缀混用问题。
+     * 因此 v3.4 不再走库的 run()，改为自建 DexClassLoader 运行器（见 [runDexDirectly]），
+     * 并把 dex 与优化目录都落到 canonical 后的 `/data/data/<pkg>/...` 真实路径。
      */
     private fun copyDexToPrivate(dexFile: File): File {
-        // 与库内部 optimizedDirectory 同源的 filesDir 根（避免 /data/user/0 与 /data/data 混用）
-        val baseDir = File(JavaEngineSetting.defaultCacheDir).parentFile ?: context.filesDir
+        // canonicalPath 解析 /data/user/0 -> /data/data，规避符号链接导致的 ENOENT
+        val baseDir = File(context.filesDir.canonicalPath)
         val privateDir = File(baseDir, "dexrun").apply { mkdirs() }
         val target = File(privateDir, dexFile.name)
         appendConsole(">>> Dex 源路径：${dexFile.absolutePath}\n")
-        appendConsole(">>> filesDir 根：${baseDir.absolutePath}\n")
-        appendConsole(">>> 优化目录  ：${JavaEngineSetting.defaultCacheDir}\n")
+        appendConsole(">>> Dex canonical：${target.canonicalPath}\n")
         runCatching {
             dexFile.inputStream().use { input ->
                 target.outputStream().use { out -> input.copyTo(out) }
@@ -498,8 +515,100 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             appendConsole("⚠ 复制 Dex 失败（已回退原始路径）：${it.message}\n")
             return dexFile
         }
-        appendConsole(">>> Dex 复制 → ${target.absolutePath}\n")
+        appendConsole(">>> Dex 复制 → ${target.canonicalPath}\n")
         return target
+    }
+
+    /**
+     * v3.4 自建 DexClassLoader 运行器（替代库的 run()）。
+     *
+     * 完全掌控：
+     * 1. dex 路径与优化目录均使用 canonical（/data/data）路径，规避 /data/user/0 符号链接 ENOENT；
+     * 2. 复用库的入口类查询 [JavaProgramHelper.queryMainFunctionList] 与既有多主类选择弹窗；
+     * 3. 通过重定向 System.out/err/in 把程序输出送到控制台，并支持 stdin 输入。
+     */
+    private suspend fun runDexDirectly(dexFile: File, args: Array<String>): RunHandle {
+        val mainClasses = JavaProgramHelper.queryMainFunctionList(dexFile)
+        Log.d("JavaIDE", "Dex file absolute path: ${dexFile.absolutePath}")
+        Log.d("JavaIDE", "Dex file canonical path: ${dexFile.canonicalPath}")
+        Log.d("JavaIDE", "Dex file exists: ${dexFile.exists()}, canRead: ${dexFile.canRead()}")
+        val mainClass = withContext(Dispatchers.Main) {
+            suspendCancellableCoroutine<String> { cont ->
+                chooseEntryClass().invoke(mainClasses, cont)
+            }
+        }
+
+        // 关键：canonical 路径 + 应用私有优化目录（/data/data/<pkg>/files/optimized）
+        val dexPath = dexFile.canonicalPath
+        val optimizedDir = File(context.filesDir.canonicalPath, "optimized").apply { mkdirs() }
+        Log.d("JavaIDE", "optimizedDir: ${optimizedDir.absolutePath}, exists: ${optimizedDir.exists()}, canWrite: ${optimizedDir.canWrite()}")
+        appendConsole(">>> 运行 Dex(canonical)：$dexPath\n")
+        appendConsole(">>> 优化目录(canonical)：${optimizedDir.absolutePath}\n")
+
+        val classLoader = DexClassLoader(
+            dexPath,
+            optimizedDir.absolutePath,
+            null,
+            ClassLoader.getSystemClassLoader()
+        )
+        val clazz = classLoader.loadClass(mainClass)
+        val method = clazz.getDeclaredMethod("main", Array<String>::class.java)
+        return DexRunHandle(method, args)
+    }
+
+    /**
+     * v3.4 直接运行句柄：在独立 IO 作用域执行 main，重定向 System 标准流到控制台，支持 stdin。
+     */
+    private inner class DexRunHandle(
+        private val mainMethod: Method,
+        private val args: Array<String>
+    ) : RunHandle {
+        private val pipedOut = PipedOutputStream()
+        private val pipedIn = PipedInputStream(pipedOut)
+        private val origOut = System.out
+        private val origErr = System.err
+        private val origIn = System.`in`
+        private val job = SupervisorJob()
+        private val scope = CoroutineScope(job + Dispatchers.IO)
+
+        init {
+            System.setIn(pipedIn)
+            System.setOut(PrintStream(ConsoleOut(false), true))
+            System.setErr(PrintStream(ConsoleOut(true), true))
+            scope.launch {
+                runCatching { mainMethod.invoke(null, args) }
+                    .onFailure {
+                        val msg = it.message ?: it.javaClass.simpleName
+                        appendConsole("\n>>> 程序异常终止：\n$msg\n")
+                    }
+            }
+        }
+
+        private inner class ConsoleOut(private val isErr: Boolean) : OutputStream() {
+            private val buf = StringBuilder()
+            @Synchronized override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+            @Synchronized override fun write(b: ByteArray, off: Int, len: Int) {
+                buf.append(String(b, off, len, Charsets.UTF_8))
+                var i = buf.indexOf('\n')
+                while (i >= 0) {
+                    appendConsole(buf.substring(0, i + 1))
+                    buf.delete(0, i + 1)
+                    i = buf.indexOf('\n')
+                }
+            }
+        }
+
+        override fun inputStdin(text: String) {
+            runCatching { pipedOut.write(text.toByteArray()); pipedOut.flush() }
+        }
+
+        override fun close() {
+            runCatching { pipedOut.close() }
+            runCatching { job.cancel() }
+            System.setOut(origOut)
+            System.setErr(origErr)
+            System.setIn(origIn)
+        }
     }
 
     fun runCode(sourceText: String) {
@@ -525,15 +634,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val dex = JavaEngine.dexCompiler.compile(jar, outDir)
                 // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
                 val runDex = copyDexToPrivate(dex)
-                appendConsole(">>> 运行 Dex：${runDex.absolutePath}\n")
                 appendConsole(">>> 运行中：\n")
-                val consoleHandle = JavaEngine.javaProgram.run(
-                    runDex,
-                    emptyArray<String>(),
-                    chooseMainClassToRun = chooseEntryClass(),
-                    printOut = { appendConsole(it.toString()) },
-                    printErr = { appendConsole(it.toString()) }
-                )
+                val consoleHandle = runDexDirectly(runDex, emptyArray())
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
                 appendConsole("\n>>> 运行失败：\n${e.message}\n")
@@ -559,15 +661,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val dex = JavaEngine.dexCompiler.compile(jarFile, outDir)
                 // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
                 val runDex = copyDexToPrivate(dex)
-                appendConsole(">>> 运行 Dex：${runDex.absolutePath}\n")
                 appendConsole(">>> 运行中：\n")
-                val consoleHandle = JavaEngine.javaProgram.run(
-                    runDex,
-                    emptyArray<String>(),
-                    chooseMainClassToRun = chooseEntryClass(),
-                    printOut = { appendConsole(it.toString()) },
-                    printErr = { appendConsole(it.toString()) }
-                )
+                val consoleHandle = runDexDirectly(runDex, emptyArray())
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
                 appendConsole("\n>>> 运行 JAR 失败：\n${e.message}\n")
