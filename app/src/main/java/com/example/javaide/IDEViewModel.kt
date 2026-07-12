@@ -38,6 +38,7 @@ import java.util.jar.JarEntry
 import java.util.jar.JarFile
 import java.util.jar.JarOutputStream
 import java.util.jar.Manifest
+import java.util.zip.ZipFile
 import kotlin.concurrent.withLock
 import java.util.concurrent.locks.ReentrantLock
 
@@ -529,15 +530,26 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * v3.4 自建 DexClassLoader 运行器（替代库的 run()）。
+     * 从 dex 中提取所有包含 `main(String[])` 的类全名（即入口类列表）。
+     * 复用库提供的 [JavaProgramHelper.queryMainFunctionList]——它是纯 dex 解析，
+     * 与库的 run() 无关；v3.4 日志已证明它能正确找到主类（否则会报“未找到 main”而非 ENOENT）。
+     */
+    private suspend fun detectMainClassFromDex(dexFile: File): List<String> {
+        return JavaProgramHelper.queryMainFunctionList(dexFile)
+    }
+
+    /**
+     * v3.4 起：完全自建 DexClassLoader 运行器，**不再调用** compiler-d8 的 JavaProgram.run()
+     * （其 optimizedDirectory 在本机解析为 /data/user/0 符号链接形式，构造即 ENOENT；
+     * 即便用 canonical 路径，本机 DexClassLoader 仍对路径/裸 dex 敏感，故这里完全掌控）。
      *
-     * 完全掌控：
-     * 1. dex 路径与优化目录均使用 canonical（/data/data）路径，规避 /data/user/0 符号链接 ENOENT；
-     * 2. 复用库的入口类查询 [JavaProgramHelper.queryMainFunctionList] 与既有多主类选择弹窗；
-     * 3. 通过重定向 System.out/err/in 把程序输出送到控制台，并支持 stdin 输入。
+     * 1. dex 与优化目录使用 codeCacheDir（Android 指定的代码缓存区，SELinux 标签最稳）；
+     * 2. 通过 [detectMainClassFromDex] 取主类，并复用多主类选择弹窗；
+     * 3. 重定向 System.out/err/in 到控制台，支持 stdin；
+     * 4. 裸 .dex 加载失败时自动回退为 jar 包装再加载。
      */
     private suspend fun runDexDirectly(dexFile: File, args: Array<String>): RunHandle {
-        val mainClasses = JavaProgramHelper.queryMainFunctionList(dexFile)
+        val mainClasses = detectMainClassFromDex(dexFile)
 
         // ===== 诊断日志（你要求的 dex 可读性 / 优化目录权限，全部输出到 logcat + 控制台）=====
         val optDir = File(context.codeCacheDir.canonicalPath, "optimized").apply { mkdirs() }
@@ -574,13 +586,13 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         return DexRunHandle(method, args)
     }
 
-    /** 用 DexClassLoader 加载 dex/jar 并取出 main 方法。 */
+    /** 用 DexClassLoader 加载 dex/jar 并取出 main 方法（父加载器用应用自身 ClassLoader，便于访问 Android 框架类）。 */
     private fun loadMainMethod(dexPath: String, optDir: String, mainClass: String): Method {
         val classLoader = DexClassLoader(
             dexPath,
             optDir,
             null,
-            ClassLoader.getSystemClassLoader()
+            this.javaClass.classLoader
         )
         val clazz = classLoader.loadClass(mainClass)
         return clazz.getDeclaredMethod("main", Array<String>::class.java)
@@ -698,9 +710,9 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             appendConsole(">>> JAR 文件不存在或为空：$jarPath\n")
             return
         }
-        // 校验是否为合法 jar：d8 对损坏/invalid 的 jar 只会笼统报 "Compilation failed to complete"
-        runCatching { JarFile(jarFile) }.onFailure {
-            appendConsole(">>> JAR 文件无效（无法作为 jar 打开）：${it.message}\n")
+        // 校验是否为合法 zip/jar：d8 对损坏的 jar 只会笼统报 "error in opening zip file" / "Compilation failed to complete"
+        runCatching { ZipFile(jarFile) }.onFailure {
+            appendConsole(">>> JAR 文件无效，请重新生成（${it.message}）\n")
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
