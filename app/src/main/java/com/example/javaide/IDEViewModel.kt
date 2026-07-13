@@ -92,6 +92,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- UI 状态 ----------
     val tree = androidx.compose.runtime.mutableStateOf(FileUtils.buildTree(projectDir))
     val currentFile = androidx.compose.runtime.mutableStateOf<File?>(null)
+    /** 运行参数：传给 main(String[] args) 的内容（空格分隔）。 */
+    val programArgs = androidx.compose.runtime.mutableStateOf("")
     val isRunning = androidx.compose.runtime.mutableStateOf(false)
     val consoleExpanded = androidx.compose.runtime.mutableStateOf(true)
     val treeOpen = androidx.compose.runtime.mutableStateOf(true)
@@ -598,7 +600,21 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             throw e
         }
         appendConsole(">>> 运行中：\n")
+        // v3.11：把“当前工作目录（user.dir）”设为项目根目录。
+        // 这是 v3.10 日志里「运行失败: No such file or directory」的根因——类已加载成功并真正执行，
+        // 但用户程序用相对路径（如 new FileInputStream("data.txt")）打开文件时，Android 默认 user.dir 为
+        // “/”（根目录）而非项目目录，于是找不到文件。这里显式覆盖为项目根，使相对路径相对项目目录解析。
+        val workDir = projectDir.absolutePath
+        System.setProperty("user.dir", workDir)
+        appendConsole(">>> 工作目录(user.dir)=$workDir\n")
         return DexRunHandle(method, args)
+    }
+
+    /** v3.11：把运行参数文本框内容按空白拆分为 String[]，传给 main(String[] args)。 */
+    private fun parseProgramArgs(): Array<String> {
+        val raw = programArgs.value.trim()
+        if (raw.isEmpty()) return emptyArray()
+        return raw.split(Regex("\\s+")).toTypedArray()
     }
 
     /**
@@ -804,7 +820,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 // 复制到私有目录，避免运行期读取外部存储 dex 触发 “No such file or directory”
                 val runDex = copyDexToPrivate(dex)
                 appendConsole(">>> 运行中：\n")
-                val consoleHandle = runDexDirectly(runDex, emptyArray())
+                val consoleHandle = runDexDirectly(runDex, parseProgramArgs())
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
                 Log.e("JavaIDE", "运行失败", e)
@@ -836,7 +852,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val outDir = File(projectDir, "out").apply { mkdirs() }
                 val dex = JavaEngine.dexCompiler.compile(jarFile, outDir)
                 val runDex = copyDexToPrivate(dex)
-                val consoleHandle = runDexDirectly(runDex, emptyArray())
+                val consoleHandle = runDexDirectly(runDex, parseProgramArgs())
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
                 Log.e("JavaIDE", "运行 JAR 失败", e)

@@ -295,6 +295,15 @@ fun IDEScreen(vm: IDEViewModel) {
             // 点击右侧（编辑区 / 空屏）即收起文件树（需求四，等效于点左上角三道杠）。
             Box(Modifier.fillMaxSize().weight(1f)) {
                 Column(Modifier.fillMaxSize()) {
+                // v3.11：运行参数输入框（空格分隔，传给 main(String[] args)）
+                OutlinedTextField(
+                    value = vm.programArgs.value,
+                    onValueChange = { vm.programArgs.value = it },
+                    label = { Text("运行参数") },
+                    placeholder = { Text("传给 main 的参数，空格分隔") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
+                )
                 // 标签页栏：横向滚动，点击切换、× 关闭
                 AnimatedVisibility(
                     visible = vm.openTabs.value.isNotEmpty(),
