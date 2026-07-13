@@ -1,5 +1,6 @@
 package com.example.javaide.ui
 
+import com.example.javaide.BuildConfig
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -772,6 +773,21 @@ private fun SettingsScreen(
             style = MaterialTheme.typography.bodySmall,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
         )
+        HorizontalDivider()
+
+        // 应用版本（便于确认当前安装的是哪个构建）
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text("应用版本", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "JavaIDE v${BuildConfig.VERSION_NAME}（versionCode ${BuildConfig.VERSION_CODE}）",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                "排查 ENOENT 等问题时，请先核对此处版本号再反馈日志。",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
     }
 }
 
