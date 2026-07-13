@@ -176,6 +176,7 @@ fun IDEScreen(vm: IDEViewModel) {
                     tmp.outputStream().use { output -> input.copyTo(output) }
                 }
                 vm.runJar(tmp.absolutePath)
+                showConsole = true
             } catch (e: Exception) {
                 vm.appendConsole(">>> 无法读取 JAR 文件：${e.message}\n")
             }
@@ -266,6 +267,14 @@ fun IDEScreen(vm: IDEViewModel) {
                             DropdownMenuItem(
                                 text = { Text("清空控制台") },
                                 onClick = { menuOpen = false; vm.clearConsole() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("导出日志") },
+                                onClick = { menuOpen = false; vm.appendConsole(">>> ${vm.exportLog()}\n") }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("复制日志") },
+                                onClick = { menuOpen = false; vm.appendConsole(">>> ${vm.copyLog()}\n") }
                             )
                         }
                     }

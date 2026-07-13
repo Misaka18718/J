@@ -45,6 +45,11 @@ import java.util.jar.Manifest
 import java.util.zip.ZipFile
 import kotlin.concurrent.withLock
 import java.util.concurrent.locks.ReentrantLock
+import android.content.ClipboardManager
+import android.content.ClipData
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 运行句柄：v3.4 起，[IDEViewModel] 不再依赖 compiler-d8 的 [com.xiaoyv.java.compiler.tools.exec.JavaProgram.run]
@@ -741,8 +746,9 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             scope.launch {
                 runCatching { mainMethod.invoke(null, args) }
                     .onFailure {
-                        val msg = it.message ?: it.javaClass.simpleName
-                        appendConsole("\n>>> 程序异常终止：\n$msg\n")
+                        // 这是“程序运行时”的崩溃（例如程序自身读取了不存在的文件），
+                        // 与“类加载失败”是两回事；打印完整异常链（含文件名 / Caused by）便于定位。
+                        appendConsole("\n>>> 程序运行异常终止（运行时错误，非加载失败）：\n${throwableChain(it)}\n")
                     }
             }
         }
@@ -892,6 +898,29 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         bufLock.withLock { buffer.setLength(0) }
         _console.value = ""
     }
+
+    // ---------- 日志导出（供排查 ENOENT 等问题时反馈）----------
+    /** 导出当前控制台全部日志到文件，返回结果路径或错误信息。 */
+    fun exportLog(): String {
+        return runCatching {
+            val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "logs").apply { mkdirs() }
+            val file = File(dir, "JavaIDE_log_${logStamp()}.txt")
+            file.writeText(buffer.toString())
+            "日志已导出：${file.absolutePath}"
+        }.getOrElse { "导出日志失败：${it.message}" }
+    }
+
+    /** 复制当前控制台全部日志到系统剪贴板，便于直接粘贴反馈。 */
+    fun copyLog(): String {
+        return runCatching {
+            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("JavaIDE Log", buffer.toString()))
+            "日志已复制到剪贴板，可直接粘贴反馈"
+        }.getOrElse { "复制失败：${it.message}" }
+    }
+
+    private fun logStamp(): String =
+        SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 
     fun toggleTree() {
         treeOpen.value = !treeOpen.value
