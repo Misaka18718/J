@@ -3,6 +3,7 @@ package com.example.javaide
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import android.os.Environment
 import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
@@ -11,8 +12,10 @@ import com.xiaoyv.java.compiler.JavaEngine
 import com.xiaoyv.java.compiler.tools.exec.JavaProgramHelper
 import android.util.Log
 import dalvik.system.DexClassLoader
+import dalvik.system.DexFile
 import dalvik.system.PathClassLoader
 import java.io.OutputStream
+import java.nio.ByteBuffer
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.io.PrintStream
@@ -540,32 +543,39 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * v3.4 起：完全自建 DexClassLoader 运行器，**不再调用** compiler-d8 的 JavaProgram.run()
-     * （其 optimizedDirectory 在本机解析为 /data/user/0 符号链接形式，构造即 ENOENT；
-     * 即便用 canonical 路径，本机 DexClassLoader 仍对路径/裸 dex 敏感，故这里完全掌控）。
+     * v3.4 起：完全自建 DexClassLoader 运行器，**不再调用** compiler-d8 的 JavaProgram.run()。
      *
      * 1. dex 与优化目录使用 codeCacheDir（Android 指定的代码缓存区，SELinux 标签最稳）；
      * 2. 通过 [detectMainClassFromDex] 取主类，并复用多主类选择弹窗；
      * 3. 重定向 System.out/err/in 到控制台，支持 stdin；
-     * 4. 裸 .dex 加载失败时自动回退为 jar 包装再加载。
+     * 4. v3.8：加载器升级为「多策略 + 内存加载优先」。
+     *    真机实测：dex 文件存在、可读、魔数有效、优化目录可写，但 DexClassLoader/PathClassLoader
+     *    仍报 `No such file or directory`——根因是 ART 在生成优化产物（oat/odex）时被 SELinux 拦截，
+     *    与 dex/jar 内容无关（连 Termux 合法 JAR 也相同失败）。
+     *    故 v3.8 把 [InMemoryDexClassLoader]（API26+）放在最前：dex 直接读进 ByteBuffer，
+     *    **不落盘、不生成 oat**，从根本上绕开 optimizedDir/SELinux 的 ENOENT。
      */
     private suspend fun runDexDirectly(dexFile: File, args: Array<String>): RunHandle {
         val mainClasses = detectMainClassFromDex(dexFile)
 
-        // ===== 诊断日志（你要求的 dex 可读性 / 优化目录权限，全部输出到 logcat + 控制台）=====
+        // ===== 诊断日志（dex 可读性 / 优化目录权限 / SELinux 上下文，全部输出到 logcat + 控制台）=====
         val optDir = File(context.codeCacheDir.canonicalPath, "optimized").apply { mkdirs() }
+        val cacheDir = context.codeCacheDir
         Log.d("JavaIDE", "Dex absolute  : ${dexFile.absolutePath}")
         Log.d("JavaIDE", "Dex canonical : ${dexFile.canonicalPath}")
         Log.d("JavaIDE", "Dex exists    : ${dexFile.exists()}")
         Log.d("JavaIDE", "Dex canRead   : ${dexFile.canRead()}")
         Log.d("JavaIDE", "Dex canWrite  : ${dexFile.canWrite()}")
         Log.d("JavaIDE", "Dex length    : ${dexFile.length()}")
-        Log.d("JavaIDE", "Dex parent    : ${dexFile.parentFile?.absolutePath} exists=${dexFile.parentFile?.exists()}")
+        Log.d("JavaIDE", "Dex magic     : ${dexMagic(dexFile)}")
         Log.d("JavaIDE", "OptDir absolute: ${optDir.absolutePath}")
         Log.d("JavaIDE", "OptDir exists  : ${optDir.exists()}")
         Log.d("JavaIDE", "OptDir canWrite: ${optDir.canWrite()}")
-        appendConsole(">>> Dex exists=${dexFile.exists()} canRead=${dexFile.canRead()} length=${dexFile.length()}\n")
+        Log.d("JavaIDE", "CacheDir      : ${cacheDir.absolutePath} exists=${cacheDir.exists()}")
+        Log.d("JavaIDE", "SDK_INT       : ${Build.VERSION.SDK_INT}")
+        appendConsole(">>> Dex exists=${dexFile.exists()} canRead=${dexFile.canRead()} length=${dexFile.length()} magic=${dexMagic(dexFile)}\n")
         appendConsole(">>> 优化目录：${optDir.absolutePath} exists=${optDir.exists()} canWrite=${optDir.canWrite()}\n")
+        appendConsole(">>> codeCacheDir：${cacheDir.absolutePath} exists=${cacheDir.exists()} SDK=${Build.VERSION.SDK_INT}\n")
 
         val mainClass = withContext(Dispatchers.Main) {
             suspendCancellableCoroutine<String> { cont ->
@@ -573,13 +583,13 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-        // 多策略加载：真机实测即便合法 dex/jar 也会因 optimizedDir 被 SELinux 拦截而 ENOENT，
-        // 故优先尝试不指定优化目录的 PathClassLoader（走系统默认优化的 odex 位置，最稳）。
+        // 多策略加载：优先 InMemoryDexClassLoader（不落盘、不生成 oat，规避 SELinux 拦截），
+        // 失败再依次回退到 jar 包装 + PathClassLoader / DexClassLoader / DexFile.loadDex。
         val method = try {
             loadMainMethod(dexFile, optDir.absolutePath, mainClass)
         } catch (e: Throwable) {
             Log.e("JavaIDE", "所有 Dex 加载策略均失败", e)
-            appendConsole(">>> 所有 Dex 加载策略均失败：\n${e.stackTraceToString()}\n")
+            appendConsole(">>> 所有 Dex 加载策略均失败：\n${throwableChain(e)}\n")
             throw e
         }
         appendConsole(">>> 运行中：\n")
@@ -587,37 +597,112 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 用 DexClassLoader / PathClassLoader 加载 dex/jar 并取出 main 方法。
-     * 依次尝试以下策略，返回首个成功的 Method，并日志打印采用的策略：
-     *   1) PathClassLoader(jar)        —— 先包装成 jar，不指定优化目录（规避 optimizedDir 写权限/SELinux 问题，最稳）
+     * 用多种类加载策略加载 dex/jar 并取出 main 方法，返回首个成功的 Method。
+     * 策略顺序（前面的更稳）：
+     *   0) InMemoryDexClassLoader(dex/jar 字节) —— API26+，内存加载，不生成 oat（v3.8 首选，根治 SELinux ENOENT）
+     *   1) PathClassLoader(jar)               —— 包装成 jar，不指定优化目录
      *   2) DexClassLoader(raw dex + opt)
      *   3) DexClassLoader(jar + opt)
-     *   4) PathClassLoader(raw dex)
+     *   4) InMemoryDexClassLoader(jar 字节)   —— 若裸 dex 字节加载失败，再试 jar 字节
+     *   5) PathClassLoader(raw dex)
+     *   6) DexFile.loadDex(dex + opt)        —— API24+ 兜底（同样会生成 oat，仅作最后手段）
      * 父加载器统一用应用自身 ClassLoader，便于访问 Android 框架类。
+     * 每个失败策略都会把**完整异常链（含 Caused by）**打印到控制台，便于真机定位。
      */
     private fun loadMainMethod(dexFile: File, optDir: String, mainClass: String): Method {
         val parent = this.javaClass.classLoader
+        val dexBytes = runCatching { dexFile.readBytes() }.getOrNull()
         val jar = runCatching { dexToJar(dexFile) }.getOrNull()
+        val jarBytes = jar?.let { runCatching { it.readBytes() }.getOrNull() }
+
         val strategies = buildList {
-            if (jar != null) add("PathClassLoader(jar)" to { PathClassLoader(jar.canonicalPath, parent) })
-            add("DexClassLoader(raw dex + opt)" to { DexClassLoader(dexFile.canonicalPath, optDir, null, parent) })
-            if (jar != null) add("DexClassLoader(jar + opt)" to { DexClassLoader(jar.canonicalPath, optDir, null, parent) })
-            add("PathClassLoader(raw dex)" to { PathClassLoader(dexFile.canonicalPath, parent) })
+            // 0) 内存加载（API26+）：dex 直接读进 ByteBuffer，不落盘、不生成 oat，彻底规避 optimizedDir/SELinux 的 ENOENT
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && dexBytes != null) {
+                add("InMemoryDexClassLoader(dex bytes)" to {
+                    makeInMemoryLoader(dexBytes, parent).loadClass(mainClass)
+                        .getDeclaredMethod("main", Array<String>::class.java)
+                })
+            }
+            if (jar != null) add("PathClassLoader(jar)" to {
+                PathClassLoader(jar.canonicalPath, parent).loadClass(mainClass)
+                    .getDeclaredMethod("main", Array<String>::class.java)
+            })
+            add("DexClassLoader(raw dex + opt)" to {
+                DexClassLoader(dexFile.canonicalPath, optDir, null, parent).loadClass(mainClass)
+                    .getDeclaredMethod("main", Array<String>::class.java)
+            })
+            if (jar != null) add("DexClassLoader(jar + opt)" to {
+                DexClassLoader(jar.canonicalPath, optDir, null, parent).loadClass(mainClass)
+                    .getDeclaredMethod("main", Array<String>::class.java)
+            })
+            if (jarBytes != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                add("InMemoryDexClassLoader(jar bytes)" to {
+                    makeInMemoryLoader(jarBytes, parent).loadClass(mainClass)
+                        .getDeclaredMethod("main", Array<String>::class.java)
+                })
+            }
+            add("PathClassLoader(raw dex)" to {
+                PathClassLoader(dexFile.canonicalPath, parent).loadClass(mainClass)
+                    .getDeclaredMethod("main", Array<String>::class.java)
+            })
+            if (dexBytes != null) add("DexFile.loadDex(dex + opt)" to {
+                makeDexFileLoader(dexFile, optDir, parent, mainClass)
+            })
         }
+
         var lastErr: Throwable? = null
         for ((name, make) in strategies) {
             try {
-                val cl = make()
-                val clazz = cl.loadClass(mainClass)
+                val m = make()
                 Log.d("JavaIDE", "加载策略成功：$name")
                 appendConsole(">>> 加载策略：$name\n")
-                return clazz.getDeclaredMethod("main", Array<String>::class.java)
+                return m
             } catch (e: Throwable) {
                 lastErr = e
                 Log.w("JavaIDE", "加载策略失败：$name", e)
+                appendConsole(">>>   策略失败：$name\n${throwableChain(e)}\n")
             }
         }
         throw lastErr ?: RuntimeException("所有 Dex 加载策略均失败")
+    }
+
+    /** 通过反射构造 InMemoryDexClassLoader，避免 API<26 设备上类引用导致的 VerifyError。 */
+    private fun makeInMemoryLoader(bytes: ByteArray, parent: ClassLoader): ClassLoader {
+        val buf = ByteBuffer.wrap(bytes)
+        val clazz = Class.forName("dalvik.system.InMemoryDexClassLoader")
+        val ctor = clazz.getConstructor(ByteBuffer::class.java, ClassLoader::class.java)
+        return ctor.newInstance(buf, parent) as ClassLoader
+    }
+
+    /** 用 DexFile.loadDex 直接加载 dex 并取出主类（API24+ 兜底，会生成 oat，仅最后手段）。 */
+    private fun makeDexFileLoader(dexFile: File, optDir: String, parent: ClassLoader, mainClass: String): Method {
+        val df = DexFile.loadDex(dexFile.canonicalPath, optDir, 0)
+            ?: throw RuntimeException("DexFile.loadDex 返回 null")
+        val clazz = df.loadClass(mainClass, parent)
+        return clazz.getDeclaredMethod("main", Array<String>::class.java)
+    }
+
+    /** 读取 dex 魔数（前 4 字节，应为 "dex\n"），用于诊断。 */
+    private fun dexMagic(f: File): String {
+        val m = ByteArray(4)
+        val n = runCatching { f.inputStream().use { it.read(m) } }.getOrElse { -1 }
+        if (n != 4) return "读取失败($n)"
+        return m.map { it.toInt().toChar() }.joinToString("") { if (it.isISOControl()) "<0x%02X>".format(it.code) else it.toString() }
+    }
+
+    /** 把异常的完整链（含 Caused by）格式化为字符串，保证真机能看到根因。 */
+    private fun throwableChain(e: Throwable): String {
+        val sb = StringBuilder()
+        var cur: Throwable? = e
+        var depth = 0
+        while (cur != null) {
+            if (depth > 0) sb.append("Caused by: ")
+            sb.append(cur.toString()).append("\n")
+            cur.stackTrace.take(15).forEach { sb.append("    at ").append(it).append("\n") }
+            cur = cur.cause
+            if (++depth > 6) break
+        }
+        return sb.toString()
     }
 
     /** 把裸 .dex 重新打包成 .jar（entry=classes.dex），放到 codeCacheDir/jarwrap/，规避部分 ROM 对裸 .dex 的 ENOENT。 */
@@ -717,7 +802,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
                 Log.e("JavaIDE", "运行失败", e)
-                appendConsole("\n>>> 运行失败：\n${e.stackTraceToString()}\n")
+                appendConsole("\n>>> 运行失败：\n${throwableChain(e)}\n")
             } finally {
                 isRunning.value = false
             }
@@ -749,7 +834,7 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
                 Log.e("JavaIDE", "运行 JAR 失败", e)
-                appendConsole("\n>>> 运行 JAR 失败：\n${e.stackTraceToString()}\n")
+                appendConsole("\n>>> 运行 JAR 失败：\n${throwableChain(e)}\n")
             } finally {
                 isRunning.value = false
             }
