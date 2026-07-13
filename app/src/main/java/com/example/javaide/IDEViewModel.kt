@@ -11,6 +11,7 @@ import com.xiaoyv.java.compiler.JavaEngine
 import com.xiaoyv.java.compiler.tools.exec.JavaProgramHelper
 import android.util.Log
 import dalvik.system.DexClassLoader
+import dalvik.system.PathClassLoader
 import java.io.OutputStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
@@ -572,30 +573,51 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-        // 先尝试直接用裸 .dex 路径加载；若失败（部分 ROM 对裸 .dex 敏感会 ENOENT），
-        // 把 dex 重新打包成 .jar（entry=classes.dex）再加载。
+        // 多策略加载：真机实测即便合法 dex/jar 也会因 optimizedDir 被 SELinux 拦截而 ENOENT，
+        // 故优先尝试不指定优化目录的 PathClassLoader（走系统默认优化的 odex 位置，最稳）。
         val method = try {
-            loadMainMethod(dexFile.canonicalPath, optDir.absolutePath, mainClass)
+            loadMainMethod(dexFile, optDir.absolutePath, mainClass)
         } catch (e: Throwable) {
-            Log.w("JavaIDE", "裸 .dex 加载失败，回退 jar 包装", e)
-            appendConsole(">>> 裸 dex 加载失败（${e.message}），改用 jar 包装重试\n")
-            val jar = dexToJar(dexFile)
-            loadMainMethod(jar.canonicalPath, optDir.absolutePath, mainClass)
+            Log.e("JavaIDE", "所有 Dex 加载策略均失败", e)
+            appendConsole(">>> 所有 Dex 加载策略均失败：\n${e.stackTraceToString()}\n")
+            throw e
         }
         appendConsole(">>> 运行中：\n")
         return DexRunHandle(method, args)
     }
 
-    /** 用 DexClassLoader 加载 dex/jar 并取出 main 方法（父加载器用应用自身 ClassLoader，便于访问 Android 框架类）。 */
-    private fun loadMainMethod(dexPath: String, optDir: String, mainClass: String): Method {
-        val classLoader = DexClassLoader(
-            dexPath,
-            optDir,
-            null,
-            this.javaClass.classLoader
-        )
-        val clazz = classLoader.loadClass(mainClass)
-        return clazz.getDeclaredMethod("main", Array<String>::class.java)
+    /**
+     * 用 DexClassLoader / PathClassLoader 加载 dex/jar 并取出 main 方法。
+     * 依次尝试以下策略，返回首个成功的 Method，并日志打印采用的策略：
+     *   1) PathClassLoader(jar)        —— 先包装成 jar，不指定优化目录（规避 optimizedDir 写权限/SELinux 问题，最稳）
+     *   2) DexClassLoader(raw dex + opt)
+     *   3) DexClassLoader(jar + opt)
+     *   4) PathClassLoader(raw dex)
+     * 父加载器统一用应用自身 ClassLoader，便于访问 Android 框架类。
+     */
+    private fun loadMainMethod(dexFile: File, optDir: String, mainClass: String): Method {
+        val parent = this.javaClass.classLoader
+        val jar = runCatching { dexToJar(dexFile) }.getOrNull()
+        val strategies = buildList {
+            if (jar != null) add("PathClassLoader(jar)" to { PathClassLoader(jar.canonicalPath, parent) })
+            add("DexClassLoader(raw dex + opt)" to { DexClassLoader(dexFile.canonicalPath, optDir, null, parent) })
+            if (jar != null) add("DexClassLoader(jar + opt)" to { DexClassLoader(jar.canonicalPath, optDir, null, parent) })
+            add("PathClassLoader(raw dex)" to { PathClassLoader(dexFile.canonicalPath, parent) })
+        }
+        var lastErr: Throwable? = null
+        for ((name, make) in strategies) {
+            try {
+                val cl = make()
+                val clazz = cl.loadClass(mainClass)
+                Log.d("JavaIDE", "加载策略成功：$name")
+                appendConsole(">>> 加载策略：$name\n")
+                return clazz.getDeclaredMethod("main", Array<String>::class.java)
+            } catch (e: Throwable) {
+                lastErr = e
+                Log.w("JavaIDE", "加载策略失败：$name", e)
+            }
+        }
+        throw lastErr ?: RuntimeException("所有 Dex 加载策略均失败")
     }
 
     /** 把裸 .dex 重新打包成 .jar（entry=classes.dex），放到 codeCacheDir/jarwrap/，规避部分 ROM 对裸 .dex 的 ENOENT。 */
@@ -879,7 +901,15 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ---------- JAR 打包（主目标） ----------
-    /** 将 src 编译打包为 .jar 写入 jars/（可选入口类写入 Main-Class 清单）。 */
+    /**
+     * 将 src 编译并打包为 .jar 写入 jars/（可选入口类写入 Main-Class 清单）。
+     *
+     * v3.7 重构：不再直接 [File.copyTo] 库返回的 classes.jar。
+     * 库在打包时会先 `createAndCleanFile` 创建一个**空**的 classes.jar，再写入条目；
+     * 一旦条目为空（例如 zip 步骤异常）就会产出 0 字节/无效 jar（“error in opening zip file”）。
+     * 这里改为**自行用 JarOutputStream 重建 jar**：从编译产物（jar / classes 目录 / 单 .class 文件，
+     * 按可靠性回退）逐一写入条目，过程中输出每个条目名，打包后用 ZipFile 校验有效性。
+     */
     fun packageJar(name: String, mainClass: String) {
         val jarName = if (name.isBlank()) "app.jar"
         else if (name.endsWith(".jar")) name else "$name.jar"
@@ -892,15 +922,14 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                     return@launch
                 }
                 val buildDir = File(projectDir, "build").apply { mkdirs() }
-                appendConsole(">>> 编译 *.java -> classes.jar ...\n")
+                // 库的约定：编译后的 .class 落在 buildDir/classes，jar 产物在 buildDir/jar/classes.jar
+                val classesDir = File(buildDir, "classes")
+                appendConsole(">>> 编译 *.java ...\n")
                 val compiled = JavaEngine.classCompiler.compile(srcRoot, buildDir, null) { _, _ -> }
+                appendConsole(">>> 编译产物：${compiled.absolutePath} exists=${compiled.exists()} isDir=${compiled.isDirectory} size=${compiled.length()}\n")
                 val jarsDir = File(projectDir, "jars").apply { mkdirs() }
                 val outFile = File(jarsDir, jarName)
-                if (mainClass.isBlank()) {
-                    compiled.copyTo(outFile, overwrite = true)
-                } else {
-                    repackageWithMain(compiled, outFile, mainClass.trim())
-                }
+                writeJar(compiled, classesDir, outFile, mainClass.trim())
                 appendConsole(">>> 打包成功：${outFile.absolutePath}\n")
             } catch (e: Throwable) {
                 appendConsole("\n>>> 打包失败：\n${e.stackTraceToString()}\n")
@@ -908,25 +937,92 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 读取已有 jar，重写时加入 Main-Class 清单。 */
-    private fun repackageWithMain(src: File, dst: File, mainClass: String) {
-        val manifest = Manifest().apply {
+    /**
+     * 把编译产物 [compiled] 重建为合法 jar 写入 [outFile]。
+     * 条目来源按可靠性回退：① compiled 自身非空 jar/zip → ② buildDir/classes 目录 → ③ 单 .class 文件。
+     * 每个被写入的条目都会打印到控制台；可选 [mainClass] 写入 Main-Class 清单。
+     */
+    private fun writeJar(compiled: File, classesDir: File, outFile: File, mainClass: String) {
+        val sources = resolveJarSources(compiled, classesDir)
+        if (sources.isEmpty()) {
+            appendConsole("⚠ 没有可打包的 .class 条目，跳过（可能编译未产出任何类）\n")
+            return
+        }
+        val manifest = if (mainClass.isBlank()) null else Manifest().apply {
             mainAttributes.putValue("Manifest-Version", "1.0")
             mainAttributes.putValue("Main-Class", mainClass)
         }
-        JarFile(src).use { jar ->
-            JarOutputStream(FileOutputStream(dst), manifest).use { out ->
-                val entries = jar.entries()
-                while (entries.hasMoreElements()) {
-                    val entry = entries.nextElement()
-                    if (entry.name.equals("META-INF/MANIFEST.MF", true)) continue
-                    jar.getInputStream(entry).use { input ->
-                        out.putNextEntry(JarEntry(entry.name))
-                        input.copyTo(out)
-                        out.closeEntry()
-                    }
+        var count = 0
+        JarOutputStream(outFile.outputStream().buffered(), manifest).use { out ->
+            for ((name, bytes) in sources) {
+                if (name.equals("META-INF/MANIFEST.MF", true)) continue
+                out.putNextEntry(JarEntry(name))
+                out.write(bytes)
+                out.closeEntry()
+                count++
+                appendConsole(">>>   打包：$name (${bytes.size} 字节)\n")
+            }
+        }
+        appendConsole(">>> 共写入 $count 个条目\n")
+        validateJar(outFile)
+    }
+
+    /** 决定 jar 的条目来源（名称 + 字节），按可靠性回退。 */
+    private fun resolveJarSources(compiled: File, classesDir: File): List<Pair<String, ByteArray>> {
+        // ① compiled 自身是 jar/zip（库目录编译返回 buildDir/jar/classes.jar）
+        if (compiled.isFile && (compiled.extension.equals("jar", true) || compiled.extension.equals("zip", true))) {
+            val fromJar = readJarEntries(compiled)
+            if (fromJar.isNotEmpty()) return fromJar
+            appendConsole(">>> 编译产物 jar 为空，回退到 classes 目录\n")
+        }
+        // ② buildDir/classes 目录（编译产物的真源，最可靠）
+        if (classesDir.isDirectory) {
+            val fromDir = readDirEntries(classesDir)
+            if (fromDir.isNotEmpty()) return fromDir
+        }
+        // ③ 单 .class 文件（单文件编译时 compiled 即 .class 路径）
+        if (compiled.isFile) {
+            return listOf(compiled.name to compiled.readBytes())
+        }
+        return emptyList()
+    }
+
+    /** 读取 jar/zip 全部非目录条目为 (条目名, 字节)。 */
+    private fun readJarEntries(jar: File): List<Pair<String, ByteArray>> {
+        val out = mutableListOf<Pair<String, ByteArray>>()
+        JarFile(jar).use { jf ->
+            jf.entries().asSequence().forEach { e ->
+                if (e.isDirectory) return@forEach
+                jf.getInputStream(e).use { out.add(e.name to it.readBytes()) }
+            }
+        }
+        return out
+    }
+
+    /** 递归读取目录内全部文件为 (相对路径, 字节)。 */
+    private fun readDirEntries(dir: File): List<Pair<String, ByteArray>> {
+        val out = mutableListOf<Pair<String, ByteArray>>()
+        dir.walkTopDown().filter { it.isFile }.forEach { f ->
+            val name = f.relativeTo(dir).invariantSeparatorsPath
+            if (name.isNotBlank()) out.add(name to f.readBytes())
+        }
+        return out
+    }
+
+    /** 用 ZipFile 打开并统计条目，验证 jar 有效性（空包会给出明确告警）。 */
+    private fun validateJar(jar: File) {
+        runCatching {
+            ZipFile(jar).use { zf ->
+                val entries = zf.entries().asSequence().toList()
+                appendConsole(">>> 校验 JAR：路径=${jar.absolutePath} 大小=${jar.length()} 条目=${entries.size}\n")
+                if (entries.isEmpty()) {
+                    appendConsole("⚠ 警告：JAR 没有任何条目（空包）！\n")
+                } else {
+                    entries.take(12).forEach { appendConsole(">>>   校验条目：${it.name}\n") }
                 }
             }
+        }.onFailure {
+            appendConsole("⚠ JAR 校验失败（文件可能被损坏）：${it.message}\n")
         }
     }
 }
