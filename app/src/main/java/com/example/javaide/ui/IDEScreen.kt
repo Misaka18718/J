@@ -97,6 +97,9 @@ fun IDEScreen(vm: IDEViewModel) {
     var showFolderPicker by remember { mutableStateOf(false) }
     var showJar by remember { mutableStateOf(false) }
     var showConsole by remember { mutableStateOf(false) }
+    // v3.12：运行参数对话框（点运行▶/运行.jar 后弹出；继续即运行，空参则无参运行）
+    var showRunDialog by remember { mutableStateOf(false) }
+    var pendingJarPath by remember { mutableStateOf<String?>(null) }
     var newFileName by remember { mutableStateOf("") }
     var newPkgName by remember { mutableStateOf("") }
 
@@ -176,8 +179,9 @@ fun IDEScreen(vm: IDEViewModel) {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     tmp.outputStream().use { output -> input.copyTo(output) }
                 }
-                vm.runJar(tmp.absolutePath)
-                showConsole = true
+                // v3.12：选择 JAR 后先弹运行参数对话框，由用户点“继续”才运行
+                pendingJarPath = tmp.absolutePath
+                showRunDialog = true
             } catch (e: Exception) {
                 vm.appendConsole(">>> 无法读取 JAR 文件：${e.message}\n")
             }
@@ -210,10 +214,9 @@ fun IDEScreen(vm: IDEViewModel) {
                     }
                     IconButton(
                         onClick = {
-                            editorRef.value?.text?.toString()?.let {
-                                vm.runCode(it)
-                                showConsole = true
-                            }
+                            // v3.12：先弹出运行参数对话框，由用户在对话框中点“继续”才真正运行
+                            pendingJarPath = null
+                            showRunDialog = true
                         },
                         enabled = !running
                     ) {
@@ -295,15 +298,6 @@ fun IDEScreen(vm: IDEViewModel) {
             // 点击右侧（编辑区 / 空屏）即收起文件树（需求四，等效于点左上角三道杠）。
             Box(Modifier.fillMaxSize().weight(1f)) {
                 Column(Modifier.fillMaxSize()) {
-                // v3.11：运行参数输入框（空格分隔，传给 main(String[] args)）
-                OutlinedTextField(
-                    value = vm.programArgs.value,
-                    onValueChange = { vm.programArgs.value = it },
-                    label = { Text("运行参数") },
-                    placeholder = { Text("传给 main 的参数，空格分隔") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)
-                )
                 // 标签页栏：横向滚动，点击切换、× 关闭
                 AnimatedVisibility(
                     visible = vm.openTabs.value.isNotEmpty(),
@@ -426,6 +420,52 @@ fun IDEScreen(vm: IDEViewModel) {
             },
             dismissButton = {
                 TextButton(onClick = { showNewFile = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // 运行参数对话框（v3.12）：点运行▶/运行.jar 后弹出；填参后点“继续”运行，空参则无参运行，或点“取消”
+    if (showRunDialog) {
+        AlertDialog(
+            onDismissRequest = { showRunDialog = false },
+            title = { Text("运行参数") },
+            text = {
+                Column {
+                    Text(
+                        "可选：填入传给 main 的参数（空格分隔）。直接点“继续”即无参运行。",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = vm.programArgs.value,
+                        onValueChange = { vm.programArgs.value = it },
+                        label = { Text("运行参数") },
+                        placeholder = { Text("例如：input.txt output.txt") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRunDialog = false
+                    showConsole = true
+                    val src = editorRef.value?.text?.toString()
+                    if (pendingJarPath != null) {
+                        vm.runJar(pendingJarPath!!)
+                        pendingJarPath = null
+                    } else if (!src.isNullOrBlank()) {
+                        vm.runCode(src)
+                    } else {
+                        vm.showToast("没有可运行的代码")
+                    }
+                }) { Text("继续") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showRunDialog = false
+                    pendingJarPath = null
+                }) { Text("取消") }
             }
         )
     }

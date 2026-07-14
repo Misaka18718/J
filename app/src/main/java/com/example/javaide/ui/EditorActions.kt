@@ -15,7 +15,10 @@ fun insertSnippet(editor: CodeEditor?, snippet: Snippet, vm: IDEViewModel) {
     val idx = SnippetEngine.caretIndex(editor)
     val token = SnippetEngine.currentToken(text, idx)
     val start = (idx - token.length).coerceAtLeast(0)
-    val (newText, caret) = SnippetEngine.apply(snippet.body, text, start, idx)
+    // v3.12：按光标所在行的缩进，把片段模板整体右移，使闭合括号等与当前层级对齐
+    val indent = SnippetEngine.lineIndent(text, start)
+    val indentedBody = SnippetEngine.indentBody(snippet.body, indent)
+    val (newText, caret) = SnippetEngine.apply(indentedBody, text, start, idx)
     editor.setText(newText)
     val (line, col) = SnippetEngine.indexToLineCol(newText, caret)
     editor.setSelection(line, col)

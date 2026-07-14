@@ -69,4 +69,28 @@ object SnippetEngine {
         val text = editor.text.toString()
         return lineColToIndex(text, editor.cursor.leftLine, editor.cursor.leftColumn)
     }
+
+    /**
+     * 取包含 [index] 的行的“缩进”：即该行行首到首个非空白字符之间的空白串。
+     * 用于片段插入时让模板整体相对当前行的缩进对齐（修复 psvm 等片段闭合括号顶格的问题）。
+     */
+    fun lineIndent(text: String, index: Int): String {
+        val lineStart = text.lastIndexOf('\n', (index - 1).coerceAtLeast(0)) + 1
+        val sb = StringBuilder()
+        var i = lineStart
+        while (i < text.length && i < index && (text[i] == ' ' || text[i] == '\t')) {
+            sb.append(text[i])
+            i++
+        }
+        return sb.toString()
+    }
+
+    /**
+     * 给片段模板的每一行前置 [indent]，保持模板内部的相对缩进不变，
+     * 使整体相对当前行缩进对齐。会去掉末尾多余的换行，避免插入后多出一行缩进空行。
+     */
+    fun indentBody(body: String, indent: String): String {
+        val trimmed = body.removeSuffix("\n")
+        return trimmed.split("\n").joinToString("\n") { indent + it }
+    }
 }

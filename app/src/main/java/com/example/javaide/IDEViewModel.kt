@@ -107,6 +107,8 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     private val _toast = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val toast = _toast.asSharedFlow()
     private fun toast(msg: String) { _toast.tryEmit(msg) }
+    /** 对外暴露：供 UI 层（如运行对话框）直接弹出 Toast 反馈。 */
+    fun showToast(msg: String) { toast(msg) }
 
     /**
      * 运行时入口类选择（v3.0 增强）。
@@ -917,22 +919,41 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 日志导出（供排查 ENOENT 等问题时反馈）----------
     /** 导出当前控制台全部日志到文件，返回结果路径或错误信息。 */
+    /**
+     * 导出当前控制台全部日志到文本文件。
+     * v3.12 起：优先写到「项目目录」下的 logs/（公开模式下即
+     * /storage/emulated/0/JavaIDE_Workspace/logs，用户用文件管理器可直接访问、便于发我），
+     * 不再默认写到 app 私有的 Android/data 目录（Android 11+ 文件管理器不可见，导致“翻半天找不到”）。
+     * 项目目录写不进时回退到 app 私有目录。写入后弹出 Toast 明确告知导出路径。
+     */
     fun exportLog(): String {
-        return runCatching {
-            val dir = File(context.getExternalFilesDir(null) ?: context.filesDir, "logs").apply { mkdirs() }
-            val file = File(dir, "JavaIDE_log_${logStamp()}.txt")
-            file.writeText(buffer.toString())
-            "日志已导出：${file.absolutePath}"
+        val msg = runCatching {
+            val target = tryExportTo(File(projectDir, "logs"))
+                ?: tryExportTo(File(context.getExternalFilesDir(null) ?: context.filesDir, "logs"))
+                ?: return@runCatching "导出日志失败：无法写入项目目录或私有目录"
+            "日志已导出：${target.absolutePath}"
         }.getOrElse { "导出日志失败：${it.message}" }
+        toast(msg)
+        return msg
     }
 
-    /** 复制当前控制台全部日志到系统剪贴板，便于直接粘贴反馈。 */
+    /** 尝试把日志写到 [dir]/JavaIDE_log_<时间戳>.txt，成功返回该文件，否则返回 null。 */
+    private fun tryExportTo(dir: File): File? = runCatching {
+        dir.mkdirs()
+        val file = File(dir, "JavaIDE_log_${logStamp()}.txt")
+        file.writeText(buffer.toString())
+        file
+    }.getOrNull()?.takeIf { it.exists() && it.length() > 0 }
+
+    /** 复制当前控制台全部日志到系统剪贴板，便于直接粘贴反馈。写入后弹出 Toast 反馈。 */
     fun copyLog(): String {
-        return runCatching {
+        val msg = runCatching {
             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             cm.setPrimaryClip(ClipData.newPlainText("JavaIDE Log", buffer.toString()))
             "日志已复制到剪贴板，可直接粘贴反馈"
         }.getOrElse { "复制失败：${it.message}" }
+        toast(msg)
+        return msg
     }
 
     private fun logStamp(): String =
