@@ -602,14 +602,52 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
             throw e
         }
         appendConsole(">>> 运行中：\n")
-        // v3.11：把“当前工作目录（user.dir）”设为项目根目录。
-        // 这是 v3.10 日志里「运行失败: No such file or directory」的根因——类已加载成功并真正执行，
-        // 但用户程序用相对路径（如 new FileInputStream("data.txt")）打开文件时，Android 默认 user.dir 为
-        // “/”（根目录）而非项目目录，于是找不到文件。这里显式覆盖为项目根，使相对路径相对项目目录解析。
+        // v3.13：真正把“工作目录”切到项目根，使程序里的相对路径（如 new File("memory/ram1.txt")）
+        // 相对项目目录解析。
+        // 关键：Android 上 `System.setProperty("user.dir", ...)` 对 java.io.File 的相对路径解析**经常不生效**
+        // （libcore 的 UnixFileSystem 会缓存 user.dir，或相对路径直接按进程真实 CWD 解析，二者都不随该属性变化），
+        // 这正是 v3.11/v3.12 设了 user.dir 仍 ENOENT 的根因。故这里三管齐下（详见 [forceUserDir]）。
+        forceUserDir(projectDir)
         val workDir = projectDir.absolutePath
-        System.setProperty("user.dir", workDir)
         appendConsole(">>> 工作目录(user.dir)=$workDir\n")
         return DexRunHandle(method, args)
+    }
+
+    /**
+     * 让“用户程序”里的相对路径（如 `new FileInputStream("data.txt")` / `new File("memory/ram1.txt")`）
+     * 相对项目目录解析。
+     *
+     * 根因：Android 的 `java.io.File` 解析相对路径时会**缓存首次使用的 `user.dir`**，之后
+     * `System.setProperty("user.dir", ...)` 无法更新它（公开 API `android.system.Os` 也不暴露 `chdir`），
+     * 所以 v3.11/v3.12 设了 user.dir 仍 ENOENT。这里改用反射直接重置 `UnixFileSystem` 内部
+     * 被缓存的 `userDir` 字段，使相对路径真正相对项目目录解析；同时保留 setProperty 与 libcore
+     * 反射 chdir 作为补充（任一生效即可，失败均忽略）。IDE 自身一律用绝对路径，不受此影响。
+     */
+    private fun forceUserDir(dir: File) {
+        val path = dir.absolutePath
+        System.setProperty("user.dir", path)
+        // 关键：反射重置 File 内部 UnixFileSystem 被缓存的 userDir 字段
+        try {
+            val fsField = File::class.java.getDeclaredField("fs")
+            fsField.isAccessible = true
+            val fs = fsField.get(null) ?: return
+            var cls: Class<*>? = fs.javaClass
+            while (cls != null) {
+                val f = cls.declaredFields.firstOrNull { it.name.equals("userDir", ignoreCase = true) }
+                if (f != null) {
+                    f.isAccessible = true
+                    f.set(fs, path)
+                    break
+                }
+                cls = cls.superclass
+            }
+        } catch (_: Throwable) {}
+        // 补充：尝试经 libcore 反射 chdir（部分实现按真实 CWD 解析；可能受隐藏 API 限制而失败，忽略）
+        try {
+            val libcore = Class.forName("libcore.io.Libcore")
+            val os = libcore.getField("os").get(null)
+            os.javaClass.getMethod("chdir", String::class.java).invoke(os, path)
+        } catch (_: Throwable) {}
     }
 
     /** v3.11：把运行参数文本框内容按空白拆分为 String[]，传给 main(String[] args)。 */
@@ -825,8 +863,14 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
                 val consoleHandle = runDexDirectly(runDex, parseProgramArgs())
                 programConsole.value = consoleHandle
             } catch (e: Throwable) {
-                Log.e("JavaIDE", "运行失败", e)
-                appendConsole("\n>>> 运行失败：\n${throwableChain(e)}\n")
+                // 用户取消入口类选择（dismiss 主类弹窗）会抛 CancellationException，
+                // 这并非错误，给出友好提示而非吓人的堆栈。
+                if (e is kotlinx.coroutines.CancellationException) {
+                    appendConsole("\n>>> 已取消运行（未选择入口类）\n")
+                } else {
+                    Log.e("JavaIDE", "运行失败", e)
+                    appendConsole("\n>>> 运行失败：\n${throwableChain(e)}\n")
+                }
             } finally {
                 isRunning.value = false
             }
@@ -1011,6 +1055,26 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
         selectedDir.value?.let { if (it.exists()) return it }
         currentFile.value?.parentFile?.let { if (it.exists()) return it }
         return File(projectDir, "src").apply { mkdirs() }
+    }
+
+    /**
+     * v3.13：把“新建 Java 文件”对话框里用户输入的「目标目录」解析为实际目录（相对项目根）。
+     * 支持三种写法：
+     *  - 空            → src
+     *  - 含 `/` 或 `\` → 视为相对项目根的路径，如 `src/me/misaka18718/prg` 或 `jars/memory`
+     *  - 含 `.` 且无斜杠 → 视为包名，映射到 `src/包名按点拆分`，如 `me.misaka18718.prg`
+     *  - 其它（裸名）  → 视为 src 下的子目录
+     * 这样用户可直接指定任意（含尚不存在的）路径，不再被自动选择束缚、也不必去挑一个已存在的空文件夹。
+     */
+    fun resolveNewFileDir(input: String): File {
+        val t = input.trim()
+        if (t.isEmpty()) return File(projectDir, "src")
+        val rel = when {
+            t.contains('/') || t.contains('\\') -> t
+            t.contains('.') -> "src/" + t.replace('.', '/')
+            else -> "src/$t"
+        }
+        return File(projectDir, rel)
     }
 
     // ---------- 工作目录切换 ----------

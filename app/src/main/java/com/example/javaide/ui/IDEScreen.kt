@@ -101,6 +101,7 @@ fun IDEScreen(vm: IDEViewModel) {
     var showRunDialog by remember { mutableStateOf(false) }
     var pendingJarPath by remember { mutableStateOf<String?>(null) }
     var newFileName by remember { mutableStateOf("") }
+    var newFileDir by remember { mutableStateOf("") }
     var newPkgName by remember { mutableStateOf("") }
 
     // 收集 ViewModel 的 Toast 提示并弹出（创建 src/out/保存等操作的用户反馈）
@@ -242,7 +243,12 @@ fun IDEScreen(vm: IDEViewModel) {
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             DropdownMenuItem(
                                 text = { Text("新建 Java 文件") },
-                                onClick = { menuOpen = false; showNewFile = true }
+                                onClick = {
+                                    menuOpen = false
+                                    newFileDir = vm.targetDirForNewFile()
+                                        .toRelativeString(vm.projectDir)
+                                    showNewFile = true
+                                }
                             )
                             DropdownMenuItem(
                                 text = { Text("选择文件夹（新建文件目录）") },
@@ -386,17 +392,23 @@ fun IDEScreen(vm: IDEViewModel) {
 
     // 新建 Java 文件
     if (showNewFile) {
-        val target = vm.targetDirForNewFile()
         AlertDialog(
             onDismissRequest = { showNewFile = false },
             title = { Text("新建 Java 文件") },
             text = {
                 Column {
                     Text(
-                        "目标目录：${target.absolutePath.removePrefix(vm.projectDir.absolutePath)
-                            .ifBlank { "/" }}",
+                        "目标目录（相对项目根；可填 src/me/demo、包名 me.demo，或留空=src；支持尚不存在的路径）",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = newFileDir,
+                        onValueChange = { newFileDir = it },
+                        placeholder = { Text("如 src/me/misaka18718/prg 或 me.misaka18718.prg") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
@@ -411,8 +423,9 @@ fun IDEScreen(vm: IDEViewModel) {
             confirmButton = {
                 TextButton(onClick = {
                     if (newFileName.isNotBlank()) {
-                        vm.createFile(newFileName, vm.targetDirForNewFile())
+                        vm.createFile(newFileName, vm.resolveNewFileDir(newFileDir))
                         newFileName = ""
+                        newFileDir = ""
                         vm.selectedDir.value = null
                         showNewFile = false
                     }
