@@ -623,20 +623,75 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
      * 被缓存的 `userDir` 字段，使相对路径真正相对项目目录解析；同时保留 setProperty 与 libcore
      * 反射 chdir 作为补充（任一生效即可，失败均忽略）。IDE 自身一律用绝对路径，不受此影响。
      */
+    /**
+     * 解除 Android 隐藏 API 限制（仅一次生效，重复调用无害）。
+     *
+     * 为什么需要：v3.13 的 [forceUserDir] 用反射改写 `java.io.File` 内部 `UnixFileSystem.userDir`
+     * 缓存字段来真正切换相对路径解析基准，但 Android 9+ 对“非 SDK 接口”的反射做了限制，
+     * 普通反射 `File.fs` / `userDir` 会被静默拦截（抛异常/返回 null），导致 v3.13 设了 user.dir
+     * 仍 ENOENT。这里通过 `Class.forName`/`getDeclaredMethod`（公开 SDK 方法）拿到
+     * `dalvik.system.VMRuntime.setHiddenApiExemptions`，把豁免签名设为 `"L"`（全部），
+     * 之后对框架内部字段的反射即可生效。该手法在 Android 9~14 的普通应用中广泛可用。
+     * 任一环节失败均忽略，退回不绕过的原行为（至少 System.setProperty 仍兜底）。
+     */
+    private fun bypassHiddenApi() {
+        try {
+            val classCls = Class::class.java
+            val classArr = Class.forName("[Ljava.lang.Class;")   // Class<?>[] 的类型对象
+            val stringArr = Class.forName("[Ljava.lang.String;") // String[] 的类型对象
+            val forName = classCls.getDeclaredMethod("forName", String::class.java)
+            val getDeclaredMethod = classCls.getDeclaredMethod("getDeclaredMethod", String::class.java, classArr)
+            val vmRuntimeCls = forName.invoke(null, "dalvik.system.VMRuntime") as Class<*>
+            val getRuntime = getDeclaredMethod.invoke(vmRuntimeCls, "getRuntime", null) as Method
+            val setExemptions = getDeclaredMethod.invoke(
+                vmRuntimeCls, "setHiddenApiExemptions", arrayOf(stringArr)
+            ) as Method
+            val vmRuntime = getRuntime.invoke(null)
+            setExemptions.invoke(vmRuntime, arrayOf(arrayOf("L")))
+        } catch (_: Throwable) {
+            // 忽略：Android 版本过新/被修补时退化，forceUserDir 仍有 System.setProperty 兜底
+        }
+    }
+
+    /**
+     * 可靠地给任意字段（含 `final`）赋值：先去掉 `final` 修饰符位，再 set。
+     * 不为 final 的字段也可走这里（去掉修饰符位对普通字段无副作用）。
+     * 失败（如 ART 仍拒绝）抛异常，由调用方捕获忽略。
+     */
+    private fun setFieldValue(obj: Any?, field: java.lang.reflect.Field, value: Any?) {
+        field.isAccessible = true
+        try {
+            // 去掉 final 修饰符：final 字段直接 set 在 ART/HotSpot 会抛 IllegalAccessException
+            val modifiersField = java.lang.reflect.Field::class.java.getDeclaredField("modifiers")
+            modifiersField.isAccessible = true
+            modifiersField.setInt(field, field.modifiers and java.lang.reflect.Modifier.FINAL.inv())
+        } catch (_: Throwable) {}
+        field.set(obj, value)
+    }
+
     private fun forceUserDir(dir: File) {
         val path = dir.absolutePath
+        // 兜底：公开 API 一定生效（但 UnixFileSystem 会缓存，单独它不够，见下）
         System.setProperty("user.dir", path)
-        // 关键：反射重置 File 内部 UnixFileSystem 被缓存的 userDir 字段
+        // 先解除隐藏 API 反射限制，否则下面改写 FileSystem 内部 final 字段会被拦截
+        bypassHiddenApi()
+        // 关键：反射重置 File 内部 UnixFileSystem 的 `userDir` final 字段
+        // （源码确认 UnixFileSystem 构造时把 user.dir 读进 private final String userDir，
+        //  resolve(File) 用 userDir 拼接相对路径，故必须改这个 final 字段才能让
+        //  new File("memory/ram1.txt") 相对项目目录解析）
         try {
             val fsField = File::class.java.getDeclaredField("fs")
             fsField.isAccessible = true
             val fs = fsField.get(null) ?: return
             var cls: Class<*>? = fs.javaClass
             while (cls != null) {
-                val f = cls.declaredFields.firstOrNull { it.name.equals("userDir", ignoreCase = true) }
+                // 不同 Android 版本字段名可能为 userDir / user_dir，大小写不敏感匹配
+                val f = cls.declaredFields.firstOrNull {
+                    it.name.equals("userDir", ignoreCase = true) ||
+                        it.name.equals("user_dir", ignoreCase = true)
+                }
                 if (f != null) {
-                    f.isAccessible = true
-                    f.set(fs, path)
+                    setFieldValue(fs, f, path)
                     break
                 }
                 cls = cls.superclass

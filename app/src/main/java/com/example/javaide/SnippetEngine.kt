@@ -86,11 +86,23 @@ object SnippetEngine {
     }
 
     /**
-     * 给片段模板的每一行前置 [indent]，保持模板内部的相对缩进不变，
-     * 使整体相对当前行缩进对齐。会去掉末尾多余的换行，避免插入后多出一行缩进空行。
+     * 给片段模板的每一行前置 [indent]，保持模板内部的相对缩进不变，使整体相对当前行缩进对齐。
+     *
+     * 关键：**[首行不加] [indent] 前缀**——片段是替换掉光标前的触发词后、紧接着光标所在行已有的
+     * 缩进之后插入的，首行本就处于「光标行缩进」之下；若再给首行加 [indent] 会变成「已有缩进 +
+     * indent」的双倍缩进（即 psvm 首行多一个 tab 的根因）。因此仅对第 2 行起的前置 [indent]，
+     * 首行保持原样（其缩进由光标所在行决定），这样既让闭合 `}` 与首行对齐（v3.12 需求），
+     * 又不会让首行多缩进（v3.14 需求）。
      */
     fun indentBody(body: String, indent: String): String {
         val trimmed = body.removeSuffix("\n")
-        return trimmed.split("\n").joinToString("\n") { indent + it }
+        val lines = trimmed.split("\n")
+        return buildString {
+            lines.forEachIndexed { i, line ->
+                if (i > 0) append(indent)   // 仅后续行加缩进前缀
+                append(line)
+                if (i < lines.lastIndex) append('\n')
+            }
+        }
     }
 }
