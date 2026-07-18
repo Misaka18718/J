@@ -104,6 +104,15 @@ fun IDEScreen(vm: IDEViewModel) {
     var newFileDir by remember { mutableStateOf("") }
     var newPkgName by remember { mutableStateOf("") }
 
+    // 任一模态页（设置/控制台/新建文件/运行参数/jar/文件夹选择/包）打开时，视为离开编辑器上下文
+    val modalOpen = showSettings || showConsole || showNewFile || showJar ||
+        showFolderPicker || showNewPkg || showRunDialog
+    // v3.15 修复：打开模态页时清空片段查询，强制收起片段弹窗，避免其残留遮挡新界面/误触；
+    // 返回编辑器后也不会自动恢复（除非重新输入触发词）
+    LaunchedEffect(modalOpen) {
+        if (modalOpen) vm.setSnippetQuery("")
+    }
+
     // 收集 ViewModel 的 Toast 提示并弹出（创建 src/out/保存等操作的用户反馈）
     val toastCtx = context
     LaunchedEffect(Unit) {
@@ -321,7 +330,7 @@ fun IDEScreen(vm: IDEViewModel) {
                     Column(Modifier.fillMaxSize()) {
                         val matches = Snippets.matches(snippetQuery)
                         AnimatedVisibility(
-                            visible = matches.isNotEmpty(),
+                            visible = matches.isNotEmpty() && !modalOpen,
                             enter = fadeIn() + scaleIn(),
                             exit = fadeOut() + scaleOut()
                         ) {

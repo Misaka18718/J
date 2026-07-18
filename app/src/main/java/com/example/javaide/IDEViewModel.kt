@@ -76,13 +76,47 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     private fun privateDir(): File =
         (context.getExternalFilesDir(null) ?: context.filesDir).resolve("JavaIDEProject")
 
-    /** 公共存储文件夹名（可自定义，存于 SharedPreferences）。 */
+    /** 公共存储“工作区”文件夹名（可自定义，存于 SharedPreferences）。v3.15 起默认 JavaIDE/workspace。 */
     val publicStoragePath = androidx.compose.runtime.mutableStateOf(
-        prefs.getString("publicStoragePath", "JavaIDE_Workspace") ?: "JavaIDE_Workspace"
-    )
+        prefs.getString("publicStoragePath", "JavaIDE/workspace") ?: "JavaIDE/workspace"
+    ).also { st ->
+        // v3.15 迁移：旧默认工作区名 JavaIDE_Workspace → JavaIDE/workspace（新目录结构）
+        if (st.value == "JavaIDE_Workspace") {
+            st.value = "JavaIDE/workspace"
+            prefs.edit().putString("publicStoragePath", "JavaIDE/workspace").apply()
+        }
+    }
 
     private fun publicDir(): File =
         File(Environment.getExternalStorageDirectory(), publicStoragePath.value)
+
+    /**
+     * 日志目录：v3.15 起与“工作区”平级，位于 <外部存储>/JavaIDE/logs。
+     * 公开模式下工作区为 <外部存储>/JavaIDE/workspace，故取 workspace 父目录下的 logs；
+     * 私有模式下回退到 app 私有外部存储下的 logs。
+     */
+    fun logsDir(): File {
+        val base = if ((prefs.getString("workingDirMode", "private") ?: "private") == "public")
+            projectDir.parentFile ?: projectDir
+        else context.getExternalFilesDir(null) ?: context.filesDir
+        return File(base, "logs")
+    }
+
+    /**
+     * v3.15 目录结构迁移：把旧默认工作区 JavaIDE_Workspace 的内容合并到新 JavaIDE/workspace，
+     * 避免用户此前在 JavaIDE_Workspace 下写的工程（如 VirtualMachine）在切换后“消失”。
+     * 仅复制、不删除旧目录，保证数据安全。
+     */
+    private fun migrateWorkspaceIfNeeded() {
+        if ((prefs.getString("workingDirMode", "private") ?: "private") != "public") return
+        val old = File(Environment.getExternalStorageDirectory(), "JavaIDE_Workspace")
+        if (!old.exists() || !old.isDirectory) return
+        val new = publicDir()
+        if (new.absolutePath == old.absolutePath) return
+        File(Environment.getExternalStorageDirectory(), "JavaIDE").mkdirs()
+        runCatching { copyDir(old, new) }
+        appendConsole(">>> 已将旧工作区 JavaIDE_Workspace 内容合并到 ${new.absolutePath}\n")
+    }
 
     /** 工程根目录（可切换私有/公共存储）。 */
     var projectDir: File = if ((prefs.getString("workingDirMode", "private")
@@ -211,7 +245,9 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
     private val MAX_LEN = 80_000
 
     init {
+        migrateWorkspaceIfNeeded()
         FileUtils.ensureSampleProject(projectDir)
+        runCatching { logsDir().mkdirs() }
         refreshTree()
         restoreTabState()
     }
@@ -658,51 +694,91 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
      * 不为 final 的字段也可走这里（去掉修饰符位对普通字段无副作用）。
      * 失败（如 ART 仍拒绝）抛异常，由调用方捕获忽略。
      */
+    /**
+     * 在内存层面改写任意字段（含 `final`），优先用 [sun.misc.Unsafe.putObject]：
+     * 它在原生层直接写字段偏移，绕过 ART/HotSpot 对 `final` 字段的校验
+     * （Java 层 `Field.set` 即便去掉 `modifiers` 位，在 ART 上仍会被 native 层拒绝）。
+     * 失败（无 Unsafe / 偏移获取失败）再退化到 `Field.set` 兜底。
+     */
+    private var unsafeRef: Any? = null
+    private fun getUnsafe(): Any? {
+        if (unsafeRef != null) return unsafeRef
+        unsafeRef = try {
+            val cls = Class.forName("sun.misc.Unsafe")
+            val f = cls.getDeclaredField("theUnsafe")
+            f.isAccessible = true
+            f.get(null)
+        } catch (_: Throwable) { null }
+        return unsafeRef
+    }
+
     private fun setFieldValue(obj: Any?, field: java.lang.reflect.Field, value: Any?) {
-        field.isAccessible = true
+        val unsafe = getUnsafe()
+        if (unsafe != null) {
+            try {
+                val cls = unsafe.javaClass
+                val offset = cls.getMethod("objectFieldOffset", java.lang.reflect.Field::class.java)
+                    .invoke(unsafe, field) as Long
+                cls.getMethod("putObject", Any::class.java, Long::class.javaPrimitiveType, Any::class.java)
+                    .invoke(unsafe, obj, offset, value)
+                return
+            } catch (_: Throwable) {}
+        }
+        // 兜底：Field.set（部分 JVM 可用；ART 对 final 通常抛，故仅兜底）
         try {
-            // 去掉 final 修饰符：final 字段直接 set 在 ART/HotSpot 会抛 IllegalAccessException
-            val modifiersField = java.lang.reflect.Field::class.java.getDeclaredField("modifiers")
-            modifiersField.isAccessible = true
-            modifiersField.setInt(field, field.modifiers and java.lang.reflect.Modifier.FINAL.inv())
+            field.isAccessible = true
+            field.set(obj, value)
         } catch (_: Throwable) {}
-        field.set(obj, value)
     }
 
     private fun forceUserDir(dir: File) {
         val path = dir.absolutePath
-        // 兜底：公开 API 一定生效（但 UnixFileSystem 会缓存，单独它不够，见下）
+        // 兜底：公开 API 设属性（框架内部可能仍读缓存字段，但保留无害）
         System.setProperty("user.dir", path)
-        // 先解除隐藏 API 反射限制，否则下面改写 FileSystem 内部 final 字段会被拦截
+        // 先解除隐藏 API 反射限制，否则访问 sun.misc.Unsafe / File.fs / userDir 会被拦截
         bypassHiddenApi()
-        // 关键：反射重置 File 内部 UnixFileSystem 的 `userDir` final 字段
+        // 关键：用 Unsafe.putObject 改写 File 内部 UnixFileSystem 的 `userDir` final 字段
         // （源码确认 UnixFileSystem 构造时把 user.dir 读进 private final String userDir，
-        //  resolve(File) 用 userDir 拼接相对路径，故必须改这个 final 字段才能让
-        //  new File("memory/ram1.txt") 相对项目目录解析）
+        //  resolve(File) 用 userDir 拼接相对路径，故必须改这个 final 字段，才能让
+        //  new File("memory/ram1.txt") 相对项目目录解析，根治 No such file or directory）
+        var changed = false
         try {
             val fsField = File::class.java.getDeclaredField("fs")
             fsField.isAccessible = true
             val fs = fsField.get(null) ?: return
             var cls: Class<*>? = fs.javaClass
+            var userDirField: java.lang.reflect.Field? = null
             while (cls != null) {
                 // 不同 Android 版本字段名可能为 userDir / user_dir，大小写不敏感匹配
-                val f = cls.declaredFields.firstOrNull {
+                userDirField = cls.declaredFields.firstOrNull {
                     it.name.equals("userDir", ignoreCase = true) ||
                         it.name.equals("user_dir", ignoreCase = true)
                 }
-                if (f != null) {
-                    setFieldValue(fs, f, path)
-                    break
-                }
+                if (userDirField != null) break
                 cls = cls.superclass
             }
-        } catch (_: Throwable) {}
-        // 补充：尝试经 libcore 反射 chdir（部分实现按真实 CWD 解析；可能受隐藏 API 限制而失败，忽略）
+            if (userDirField != null) {
+                setFieldValue(fs, userDirField, path)
+                // 读回验证是否真的改成了（构造器初始化的 final 字段可被 Unsafe 改写）
+                userDirField.isAccessible = true
+                val actual = userDirField.get(fs) as? String
+                changed = actual == path
+                appendConsole(">>> user.dir 字段实际值=$actual ${if (changed) "(已生效✅)" else "(未生效❌)"}\n")
+            } else {
+                appendConsole(">>> 警告：未找到 UnixFileSystem.userDir 字段\n")
+            }
+        } catch (e: Throwable) {
+            appendConsole(">>> 设置工作目录异常：${e.message}\n")
+        }
+        // 补充：尝试经 libcore 反射 chdir（兜底；可能受隐藏 API 限制而失败，忽略）
         try {
             val libcore = Class.forName("libcore.io.Libcore")
             val os = libcore.getField("os").get(null)
             os.javaClass.getMethod("chdir", String::class.java).invoke(os, path)
         } catch (_: Throwable) {}
+        // 工作目录状态诊断（exists / canWrite / isDir），便于真机确认相对路径落点
+        val wd = File(path)
+        appendConsole(">>> 工作目录=$path exists=${wd.exists()} canWrite=${wd.canWrite()} isDir=${wd.isDirectory}\n")
     }
 
     /** v3.11：把运行参数文本框内容按空白拆分为 String[]，传给 main(String[] args)。 */
@@ -1027,9 +1103,9 @@ class IDEViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun exportLog(): String {
         val msg = runCatching {
-            val target = tryExportTo(File(projectDir, "logs"))
+            val target = tryExportTo(logsDir())
                 ?: tryExportTo(File(context.getExternalFilesDir(null) ?: context.filesDir, "logs"))
-                ?: return@runCatching "导出日志失败：无法写入项目目录或私有目录"
+                ?: return@runCatching "导出日志失败：无法写入日志目录或私有目录"
             "日志已导出：${target.absolutePath}"
         }.getOrElse { "导出日志失败：${it.message}" }
         toast(msg)
